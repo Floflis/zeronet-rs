@@ -62,11 +62,13 @@ pub fn get_info_hash(addr: String) -> [u8; 20] {
     hasher.finalize().into()
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Addr {
     Udp(SocketAddr),
     Http(SocketAddr),
     Zero(SocketAddr),
+    /// Native ZeroNet tracker reached through the local Tor SOCKS5 proxy.
+    ZeroOnion { host: String, port: u16 },
 }
 
 /// Validate a tracker URL without resolving DNS. This keeps configuration
@@ -94,10 +96,12 @@ pub fn validate_tracker_address(tracker: &str) -> Result<(), String> {
 
     validate_authority_syntax(authority)?;
 
-    // Onion hostnames must be dialed through Tor's SOCKS interface. Resolving
-    // them through the system resolver would leak the lookup and cannot work.
-    if authority_host(authority).is_some_and(|host| host.ends_with(".onion")) {
-        return Err("onion trackers require the Tor transport, which is not enabled".to_string());
+    // Onion addresses are valid only for the native ZeroNet transport. They
+    // must be passed to Tor as hostnames, never resolved by the system DNS.
+    let is_onion = authority_host(authority)
+        .is_some_and(|host| host.to_ascii_lowercase().ends_with(".onion"));
+    if is_onion && scheme != "zero" {
+        return Err("onion tracker addresses require the native zero:// transport".to_string());
     }
 
     Ok(())
@@ -160,6 +164,25 @@ fn validate_authority_syntax(authority: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_onion_authority(authority: &str) -> Result<Option<(String, u16)>, String> {
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| format!("tracker port is missing: {authority}"))?;
+
+    if !host.to_ascii_lowercase().ends_with(".onion") {
+        return Ok(None);
+    }
+
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| format!("invalid tracker port in {authority}"))?;
+    if port == 0 {
+        return Err("tracker port must be greater than zero".to_string());
+    }
+
+    Ok(Some((host.to_owned(), port)))
+}
+
 fn resolve_authority(authority: &str) -> Result<SocketAddr, String> {
     if let Ok(mut addresses) = authority.to_socket_addrs() {
         if let Some(address) = addresses.next() {
@@ -215,6 +238,12 @@ pub fn make_addr(tracker: &str) -> Result<Addr, String> {
         );
     }
 
+    if scheme == "zero" {
+        if let Some((host, port)) = parse_onion_authority(authority)? {
+            return Ok(Addr::ZeroOnion { host, port });
+        }
+    }
+
     let socket = resolve_authority(authority)?;
     match protocol {
         0 => Ok(Addr::Udp(socket)),
@@ -236,6 +265,10 @@ pub async fn announce(
 ) -> Result<Vec<PeerAddr>, Error> {
     match addr {
         Addr::Zero(address) => zero::zero_announce(address, site_hash, port).await,
+        Addr::ZeroOnion {
+            host,
+            port: tracker_port,
+        } => zero::zero_announce_onion(host, tracker_port, site_hash, port).await,
         Addr::Http(address) => {
             let peers = http_announce(address, info_hash, port, None, peer_id).await?;
             Ok(peers
@@ -273,6 +306,8 @@ mod tests {
         assert!(validate_tracker_address("udp://tracker.example:6969/announce").is_ok());
         assert!(validate_tracker_address("http://[::1]:8080/announce").is_ok());
         assert!(validate_tracker_address("2001:db8::1:15441").is_ok());
+        assert!(validate_tracker_address("zero://tracker.example.onion:15441").is_ok());
+        assert!(validate_tracker_address("http://tracker.example.onion:8080").is_err());
     }
 
     #[test]
@@ -293,6 +328,14 @@ mod tests {
         assert!(matches!(
             make_addr("zero://127.0.0.1:15441").unwrap(),
             Addr::Zero(_)
+        ));
+    }
+
+    #[test]
+    fn preserves_onion_hostnames_for_the_tor_transport() {
+        assert!(matches!(
+            make_addr("zero://tracker.example.onion:15441").unwrap(),
+            Addr::ZeroOnion { host, port: 15441 } if host == "tracker.example.onion"
         ));
     }
 
