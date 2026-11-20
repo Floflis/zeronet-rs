@@ -102,9 +102,7 @@ fn address_family(address: IpAddr) -> AddressFamily {
 /// Return the public address family represented by an IP address.
 pub fn globally_routable_family(address: IpAddr) -> Option<AddressFamily> {
     match address {
-        IpAddr::V4(address) if is_globally_routable_ipv4(address) => {
-            Some(AddressFamily::Ipv4)
-        }
+        IpAddr::V4(address) if is_globally_routable_ipv4(address) => Some(AddressFamily::Ipv4),
         IpAddr::V6(address) => {
             if let Some(mapped) = address.to_ipv4_mapped() {
                 return is_globally_routable_ipv4(mapped).then_some(AddressFamily::Ipv4);
@@ -225,10 +223,7 @@ mod tests {
             globally_routable_family(ip("::ffff:8.8.8.8")),
             Some(AddressFamily::Ipv4)
         );
-        assert_eq!(
-            globally_routable_family(ip("::ffff:192.168.1.1")),
-            None
-        );
+        assert_eq!(globally_routable_family(ip("::ffff:192.168.1.1")), None);
     }
 
     #[test]

@@ -4,8 +4,8 @@
 #![allow(dead_code)]
 
 pub mod bencode;
-pub mod http;
 pub mod full;
+pub mod http;
 pub mod udp;
 pub mod zero;
 

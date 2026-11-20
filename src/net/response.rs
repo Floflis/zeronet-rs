@@ -20,9 +20,7 @@ impl<'a> Protocol<'a> {
     ) -> Result<bool, Error> {
         let mut body = handshake().1;
         body.port_opened = Some(port_opened);
-        self.0
-            .respond(id, ResponseType::Handshake(body))
-            .await?;
+        self.0.respond(id, ResponseType::Handshake(body)).await?;
         Ok(true)
     }
 }

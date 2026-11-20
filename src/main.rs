@@ -20,12 +20,7 @@ use log::*;
 use crate::{
     common::*,
     controllers::{connections::ConnectionController, sites::SitesController, *},
-    core::{
-        error::Error,
-        io::SiteIO,
-        site::Site,
-        site_registry::SiteRegistry,
-    },
+    core::{error::Error, io::SiteIO, site::Site, site_registry::SiteRegistry},
     environment::*,
     io::db::DbManager,
     plugins::core::manifest::PluginManifest,
@@ -272,7 +267,9 @@ async fn main() -> Result<(), Error> {
         let site_registry = SiteRegistry::default();
         let tracker_peer_cache = discovery::tracker::full::TrackerPeerCache::default();
         let user_controller = users::run().unwrap();
-        let sites_controller = sites::run_with_registry(site_registry.clone()).await.unwrap();
+        let sites_controller = sites::run_with_registry(site_registry.clone())
+            .await
+            .unwrap();
 
         let mut peer_sites_controller = SitesController::new(DbManager::new());
         peer_sites_controller

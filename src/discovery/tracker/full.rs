@@ -64,7 +64,10 @@ pub async fn announce_once(
     let sites = registry.snapshot();
     // SiteRegistry is address-sorted, so response groups map deterministically
     // back to these addresses.
-    let hashes = sites.iter().map(|site| site.hash.clone()).collect::<Vec<_>>();
+    let hashes = sites
+        .iter()
+        .map(|site| site.hash.clone())
+        .collect::<Vec<_>>();
     let add_types = reachability.service_types();
 
     let mut merged = sites

@@ -247,7 +247,11 @@ fn announce_blocking(
         std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some() => "ipv4",
         std::net::IpAddr::V6(_) => "ipv6",
     };
-    let port_opened = Some(add_types.iter().any(|service| service == tracker_family_type));
+    let port_opened = Some(
+        add_types
+            .iter()
+            .any(|service| service == tracker_family_type),
+    );
 
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -534,7 +538,9 @@ mod tests {
             onion_sign_this: None,
         };
         assert_eq!(
-            parse_announce_response_groups(partial, 1, 2).unwrap_err().kind(),
+            parse_announce_response_groups(partial, 1, 2)
+                .unwrap_err()
+                .kind(),
             ErrorKind::InvalidData
         );
     }
@@ -742,5 +748,4 @@ mod tests {
         server.join().unwrap();
         assert!(groups.is_empty());
     }
-
 }

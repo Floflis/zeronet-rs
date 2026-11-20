@@ -20,17 +20,8 @@ use zeronet_protocol::ZeroConnection;
 use zerucontent::Content;
 
 use crate::{
-    core::{
-        error::Error,
-        io::SiteIO,
-        peer::Peer,
-        site::Site,
-        site_registry::SiteRegistry,
-    },
-    discovery::{
-        reachability::ReachabilityEvidence,
-        tracker::full::TrackerPeerCache,
-    },
+    core::{error::Error, io::SiteIO, peer::Peer, site::Site, site_registry::SiteRegistry},
+    discovery::{reachability::ReachabilityEvidence, tracker::full::TrackerPeerCache},
     environment::ENV,
     net::Protocol,
     SitesController,
@@ -314,10 +305,11 @@ impl ConnectionController {
             return false;
         }
 
-        self.sites_controller.sites.insert(address.to_string(), site);
+        self.sites_controller
+            .sites
+            .insert(address.to_string(), site);
         true
     }
-
 }
 
 impl ConnectionController {
@@ -334,11 +326,7 @@ impl ConnectionController {
             let need = res.need;
             let tracker_peers = self.tracker_peer_cache.peers_for(&site_address);
             if self.sites_controller.sites.contains_key(&site_address) {
-                let site = self
-                    .sites_controller
-                    .sites
-                    .get_mut(&site_address)
-                    .unwrap();
+                let site = self.sites_controller.sites.get_mut(&site_address).unwrap();
 
                 // PEX can expose tracker-discovered peers before we have
                 // attempted direct connections to them.
