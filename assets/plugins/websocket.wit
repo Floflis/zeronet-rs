@@ -1,5 +1,0 @@
-///web_socket@0.0.1
-
-handlers: func() -> list<string>
-
-overrides: func() -> list<string>
