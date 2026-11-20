@@ -178,7 +178,10 @@ impl ConnectionController {
                         warn!("Could not respond to {peer_addr}: {error}");
                         break;
                     }
-                    debug!("Sent response {}", serde_json::to_string(&response).unwrap());
+                    debug!(
+                        "Sent response {}",
+                        serde_json::to_string(&response).unwrap()
+                    );
                 }
             }
         }

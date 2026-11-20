@@ -394,7 +394,6 @@ pub fn client_info() -> serde_json::Value {
     })
 }
 
-
 #[cfg(test)]
 mod fileserver_bind_tests {
     use super::normalize_fileserver_ip;
