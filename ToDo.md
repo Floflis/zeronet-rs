@@ -71,3 +71,16 @@ After LAN interoperability is validated, compare the relevant implementations an
 - Do not add I2P support as part of this work.
 - Keep tracker discovery available; LAN discovery is an additional peer-discovery path.
 - LAN-discovered peers are untrusted candidates and must still pass the normal peer handshake and validation.
+
+## IPv6 overlay mesh support
+
+- [x] Add selectable IPv4, IPv6, and dual-stack peer listener binds.
+- [x] Detect local CJDNS (`fc00::/8`) and Yggdrasil (`0200::/7`) routes using
+  local UDP route lookups without sending probe packets.
+- [x] Advertise the `ipv6` service type to native ZeroNet trackers only when a
+  local CJDNS or Yggdrasil route is detected.
+- [ ] Verify inbound and outbound peer interoperability between two real
+  clients on CJDNS and on Yggdrasil.
+- [ ] Verify dual-stack listener behavior on Linux, Windows, macOS, and Android.
+- [ ] Re-check mesh routes after interface or overlay state changes without
+  requiring a client restart.
