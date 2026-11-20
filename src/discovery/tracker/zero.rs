@@ -486,7 +486,13 @@ mod tests {
 
     #[test]
     fn rejects_invalid_site_hash_length() {
-        let result = announce_blocking("127.0.0.1:1".parse().unwrap(), vec![0; 20], 15441);
+        let result = announce_blocking(
+            "127.0.0.1:1".parse().unwrap(),
+            vec![0; 20],
+            15441,
+            Vec::new(),
+            None,
+        );
         assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
     }
 
