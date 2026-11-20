@@ -259,10 +259,10 @@ pub fn handle_site_info(ws: &ZeruWebsocket, command: &Command) -> Result<Message
     }
     let mut site_info = result.unwrap();
     if let Some(site_info) = append_user_site_data(ws, &mut site_info) {
-        if let Value::Object(params) = &command.params
-            && let Some(Value::String(path)) = params.get("file_status")
-        {
-            site_info.event = Some(json!(["file_done", path])); //TODO!: get file status
+        if let Value::Object(params) = &command.params {
+            if let Some(Value::String(path)) = params.get("file_status") {
+                site_info.event = Some(json!(["file_done", path])); //TODO!: get file status
+            }
         }
         command.respond(site_info)
     } else {
@@ -292,10 +292,10 @@ pub fn append_user_site_data<'a>(
         if let Some(auth) = user_site_data.get_auth_pair() {
             site_info.auth_address = auth.auth_address;
         }
-        if let Some(key) = user_site_data.get_privkey()
-            && !key.is_empty()
-        {
-            site_info.privatekey = true;
+        if let Some(key) = user_site_data.get_privkey() {
+            if !key.is_empty() {
+                site_info.privatekey = true;
+            }
         }
         #[cfg(debug_assertions)]
         {
@@ -387,10 +387,10 @@ pub fn handle_channel_join(
 pub fn handle_site_list(ws: &ZeruWebsocket, command: &Command) -> Result<Message, Error> {
     trace!("Handling SiteList : {:?}", command.params);
     let mut connecting = false;
-    if let Value::Object(map) = &command.params
-        && let Some(Value::Bool(value)) = map.get("connecting_sites")
-    {
-        connecting = *value;
+    if let Value::Object(map) = &command.params {
+        if let Some(Value::Bool(value)) = map.get("connecting_sites") {
+            connecting = *value;
+        }
     }
     let sites = block_on(ws.site_controller.send(SiteInfoListRequest { connecting }))
         .unwrap()
