@@ -24,7 +24,34 @@ The native LAN discovery service is a core networking feature. It must not depen
 - [ ] Verify behavior on supported platforms, especially UDP socket binding and interface enumeration on Linux, Windows, and Android.
 - [ ] Document remaining limitations and the results of real-network testing. Do not claim full Python parity until it has been demonstrated.
 
-### Later: compare ZeroNet implementations
+## Tracker interoperability
+
+Keep tracker discovery independent from LAN discovery. The current tracker address parser distinguishes UDP from HTTP and otherwise falls through to HTTP; this is not sufficient for ZeroNet's native `zero://` tracker protocol.
+
+### Native `zero://` protocol
+
+The Python reference implementation is `HelloZeroNet/ZeroNet`'s `plugins/AnnounceZero/AnnounceZeroPlugin.py`. It does **not** use the BitTorrent UDP announce protocol or an HTTP announce endpoint: it opens a normal ZeroNet peer connection to the tracker and sends the `announce` command with a MessagePack request.
+
+- [ ] Add an explicit tracker protocol/address variant for `zero://`; never silently route it through the HTTP or BitTorrent UDP implementation.
+- [ ] Verify the exact ZeroNet peer connection, handshake, request framing, and MessagePack behavior required by the native `announce` command.
+- [ ] Implement the request fields used by the Python client: `hashes`, `onions`, `port`, `need_types`, `need_num`, and `add`.
+  - [ ] Support the optional `delete` behavior used when announcing the complete set of locally served sites.
+  - [ ] Treat onion address/signature exchange (`onion_sign_this` and `onion_signs`) as a separately scoped Tor compatibility feature; do not add I2P.
+- [ ] Parse and validate the response's per-site `peers` entries, including the address families the client actually supports (`ip4`, `ipv4`, `ipv6`, and, when Tor support is enabled, `onion`).
+- [ ] Add protocol fixtures and tests for successful announces, empty peer sets, malformed responses, connection failures, and multi-site responses.
+- [ ] Verify peer insertion, deduplication, source attribution, and normal peer-handshake validation after tracker discovery.
+- [ ] Document any unsupported Python behaviors explicitly; do not claim full `zero://` compatibility until tested against a real Python ZeroNet tracker.
+
+### Tracker bootstrap and configuration
+
+- [ ] Define how tracker addresses are loaded and configured (built-in defaults, user configuration, and/or `assets/trackers.txt`) without coupling tracker availability to LAN discovery.
+- [ ] Validate supported schemes explicitly (`zero://`, `udp://`, `http://`, and `https://` where implemented); reject unknown schemes with a useful error instead of treating them as HTTP.
+- [ ] Keep the bootstrap list empty until candidate endpoints have been checked for current operation, protocol compatibility, and maintainership. Do not copy historical IPs or onion addresses from old ZeroNet configurations as presumed-live defaults.
+- [ ] Define timeout, retry, backoff, and per-tracker failure isolation so one unavailable tracker does not block other discovery paths.
+- [ ] Add tests for empty configuration, comments/blank lines, duplicate entries, malformed addresses, unsupported schemes, and mixed tracker protocols.
+- [ ] Document how operators can supply and update tracker endpoints without recompiling the client.
+
+## Later: compare ZeroNet implementations
 
 After LAN interoperability is validated, compare the relevant implementations and versions for:
 
