@@ -38,6 +38,7 @@ The Python reference implementation is `HelloZeroNet/ZeroNet`'s `plugins/Announc
 - [ ] Start and supervise the peer TCP listener in the normal startup path, then determine externally reachable service types for `add`; a local bind alone is not proof of public reachability. Until then, outgoing handshakes report `port_opened=false` rather than claiming an inactive listener.
   - [ ] Support the optional `delete` behavior used when announcing the complete set of locally served sites (multi-site full announce is not implemented yet).
   - [x] Route native `zero://*.onion` tracker connections through the existing `tor-stream` dependency and a local Tor SOCKS5 proxy, preserving the onion hostname instead of resolving it with system DNS. Default proxy: `127.0.0.1:9050`; override with `ZERONET_TOR_SOCKS`.
+- [x] Test the SOCKS5 path with a local proxy fixture that asserts the `.onion` domain is sent as a hostname and completes a handshake/announce exchange through the proxy.
 - [x] Keep onion signing (`onion_sign_this` / `onion_signs`) out of scope until local onion-service keys are managed; return an explicit unsupported error if challenged. Do not add I2P.
 - [x] Parse and validate response `peers` entries for `ip4`, `ipv4`, `ipv6`, and `onion` byte encodings (where the dependency feature supports them).
 - [x] Add Python-generated MessagePack fixtures and tests for successful announces, empty peer sets, malformed responses, connection failures, request IDs, duplicate peers, and multiple site groups.
