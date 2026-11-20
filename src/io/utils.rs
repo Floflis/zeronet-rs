@@ -15,7 +15,6 @@ use tokio::{fs::File, io::AsyncReadExt};
 use zerucontent::File as ZFile;
 
 use crate::{
-    discovery::tracker::validate_tracker_address,
     core::{
         error::Error,
         io::UserIO,
