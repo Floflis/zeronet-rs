@@ -25,11 +25,13 @@ pub fn handshake<'a>() -> (&'a str, Handshake) {
             protocol: "v2".into(),
             use_bin_type: true,
             time: current_unix_epoch(),
-            fileserver_port: 26117,
+            fileserver_port: ENV.fileserver_port as usize,
             crypt: None,
             crypt_supported: vec![],
             onion: None,
-            port_opened: Some(true),
+            // The peer listener is active during normal daemon startup,
+            // but a local bind does not prove external reachability.
+            port_opened: Some(false),
             target_address: None,
         },
     )

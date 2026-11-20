@@ -102,3 +102,46 @@ Try `cargo clean` and `cargo build`.
 
 ## License
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fcanewsin%2Fzeronet-rs.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fcanewsin%2Fzeronet-rs?ref=badge_large)
+
+## Tracker configuration
+
+Tracker endpoints are loaded from `assets/trackers.txt`, one endpoint per
+line. The file is intentionally empty by default: no historical tracker is
+treated as live or trusted without an interoperability check.
+
+Supported entries are:
+
+- `zero://host:port` for the native ZeroNet MessagePack tracker protocol.
+- `http://host:port/announce` for BitTorrent HTTP trackers.
+- `udp://host:port/announce` for BitTorrent UDP trackers.
+- Bare `host:port` entries remain HTTP for legacy compatibility.
+
+Blank lines and lines beginning with `#` are ignored. Duplicate entries are
+removed, malformed addresses and unsupported schemes are skipped with a
+warning, and the original order is preserved. Configuration parsing does not
+perform DNS lookups.
+
+The current native `zero://` transport supports clear-TCP clearnet endpoints
+and Tor-routed onion tracker endpoints. Certificate-pinned TLS and RSA
+onion-signing challenges are not implemented yet. Pinned endpoints are
+rejected explicitly instead of being downgraded to clear TCP.
+
+Native `zero://*.onion:port` endpoints are routed through a local Tor SOCKS5
+proxy using the hostname as supplied, so the system resolver is not asked to
+resolve the onion address. The default proxy is `127.0.0.1:9050`; set
+`ZERONET_TOR_SOCKS=127.0.0.1:9150` (or another SOCKS5 socket address) to use
+a different local listener. Tor must already be running. This does not yet
+create local onion services or answer RSA onion-signing challenges.
+
+## Peer TCP listener
+
+The normal daemon startup path starts the native peer TCP listener using
+`--fileserver_ip` and `--fileserver_port`. The default `--fileserver_ip=*`
+means `0.0.0.0`, binding all IPv4 interfaces. To keep peer serving local-only,
+set `--fileserver_ip=127.0.0.1`.
+
+A successful local bind does **not** prove that the port is reachable from the
+public internet. Until external reachability and supported service types can
+be verified, peer handshakes continue to report `port_opened=false` and
+ZeroNet tracker announces keep `add=[]`. Router/NAT/firewall checks and
+service-type advertisement remain separate work.
