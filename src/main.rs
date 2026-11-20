@@ -20,7 +20,12 @@ use log::*;
 use crate::{
     common::*,
     controllers::{connections::ConnectionController, sites::SitesController, *},
-    core::{error::Error, io::SiteIO, site::Site},
+    core::{
+        error::Error,
+        io::SiteIO,
+        site::Site,
+        site_registry::SiteRegistry,
+    },
     environment::*,
     io::db::DbManager,
     plugins::core::manifest::PluginManifest,
@@ -261,20 +266,41 @@ async fn main() -> Result<(), Error> {
     } else {
         info!("Loaded : {} Plugins.", plugins.len());
 
-        // Build the peer-serving site registry independently from the UI actor.
-        // The current controller API owns its SitesController, so this is a
-        // separate serving view of the same persisted site metadata.
+        // The UI controller is authoritative for the currently served sites.
+        // The peer listener uses its own loaded-site map, but both read this
+        // shared registry so pause/resume/add/delete are reflected live.
+        let site_registry = SiteRegistry::default();
+        let tracker_peer_cache = discovery::tracker::full::TrackerPeerCache::default();
+        let user_controller = users::run().unwrap();
+        let sites_controller = sites::run_with_registry(site_registry.clone()).await.unwrap();
+
         let mut peer_sites_controller = SitesController::new(DbManager::new());
         peer_sites_controller
             .extend_sites_from_sitedata(site_storage.clone())
             .await;
 
-        match ConnectionController::new(peer_sites_controller).await {
+        match ConnectionController::new_with_registry(
+            peer_sites_controller,
+            site_registry.clone(),
+            tracker_peer_cache.clone(),
+        )
+        .await
+        {
             Ok(peer_listener) => {
                 info!(
                     "Peer TCP listener started on {}:{}",
                     ENV.fileserver_ip, ENV.fileserver_port
                 );
+
+                // Full announces are ZeroNet-specific and run independently
+                // of the HTTP/UDP BitTorrent tracker discovery path.
+                let reachability = peer_listener.reachability_evidence();
+                tokio::spawn(discovery::tracker::full::run(
+                    site_registry,
+                    reachability,
+                    tracker_peer_cache,
+                ));
+
                 tokio::spawn(async move {
                     if let Err(error) = peer_listener.run().await {
                         error!("Peer TCP listener stopped: {error}");
@@ -286,8 +312,6 @@ async fn main() -> Result<(), Error> {
             }
         }
 
-        let user_controller = users::run().unwrap();
-        let sites_controller = sites::run().await.unwrap();
         use plugins::site_server::server;
         let _ = server::run(sites_controller, user_controller).await;
     }

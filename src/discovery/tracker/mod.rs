@@ -5,6 +5,7 @@
 
 pub mod bencode;
 pub mod http;
+pub mod full;
 pub mod udp;
 pub mod zero;
 

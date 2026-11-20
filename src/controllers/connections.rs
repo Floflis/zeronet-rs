@@ -20,30 +20,76 @@ use zeronet_protocol::ZeroConnection;
 use zerucontent::Content;
 
 use crate::{
-    core::{error::Error, io::SiteIO, peer::Peer},
+    core::{
+        error::Error,
+        io::SiteIO,
+        peer::Peer,
+        site::Site,
+        site_registry::SiteRegistry,
+    },
+    discovery::{
+        reachability::ReachabilityEvidence,
+        tracker::full::TrackerPeerCache,
+    },
     environment::ENV,
     net::Protocol,
     SitesController,
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SiteRequest {
+    site: String,
+}
+
+fn is_valid_peer_handshake(handshake: &Handshake) -> bool {
+    handshake.protocol == "v2" && !handshake.peer_id.trim().is_empty()
+}
+
 pub struct ConnectionController {
     listener: Arc<TcpListener>,
     sites_controller: SitesController,
+    site_registry: SiteRegistry,
+    reachability: ReachabilityEvidence,
+    tracker_peer_cache: TrackerPeerCache,
     conn_len: usize,
     connections: HashMap<String, usize>,
 }
 
 impl ConnectionController {
     pub async fn new(sites_controller: SitesController) -> Result<Self, Error> {
+        Self::new_with_registry(
+            sites_controller,
+            SiteRegistry::default(),
+            TrackerPeerCache::default(),
+        )
+        .await
+    }
+
+    /// Construct the peer listener with the live serving-site registry and
+    /// the cache populated by native ZeroNet tracker full-announces.
+    pub async fn new_with_registry(
+        sites_controller: SitesController,
+        site_registry: SiteRegistry,
+        tracker_peer_cache: TrackerPeerCache,
+    ) -> Result<Self, Error> {
         let ser_addr = format!("{}:{}", ENV.fileserver_ip, ENV.fileserver_port);
         info!("Listening on {ser_addr}");
         let listener = Arc::new(TcpListener::bind(ser_addr).await?);
+        let reachability = ReachabilityEvidence::new(listener.local_addr()?);
         Ok(Self {
             listener,
             sites_controller,
+            site_registry,
+            reachability,
+            tracker_peer_cache,
             conn_len: 0,
             connections: HashMap::new(),
         })
+    }
+
+    /// Clone the per-listener reachability evidence for the tracker announcer.
+    pub fn reachability_evidence(&self) -> ReachabilityEvidence {
+        self.reachability.clone()
     }
 
     /// Accept peer sessions continuously and dispatch each socket independently.
@@ -119,7 +165,30 @@ impl ConnectionController {
             let mut protocol = Protocol::new(&mut connection);
             match request.cmd.as_str() {
                 "handshake" => {
-                    if let Err(error) = protocol.handshake(request.req_id).await {
+                    let handshake = match request.body::<Handshake>() {
+                        Ok(handshake) => handshake,
+                        Err(error) => {
+                            warn!("Invalid peer handshake from {peer_addr}: {error}");
+                            break;
+                        }
+                    };
+
+                    if !is_valid_peer_handshake(&handshake) {
+                        warn!("Rejected incomplete or unsupported peer handshake from {peer_addr}");
+                        break;
+                    }
+
+                    // A completed, valid handshake from a public source proves
+                    // that this listener is reachable for that source family.
+                    let port_opened = {
+                        let state = controller.lock().await;
+                        state.reachability.record_inbound(peer_addr.ip());
+                        state.reachability.is_reachable_for(peer_addr.ip())
+                    };
+                    if let Err(error) = protocol
+                        .handshake_with_port_opened(request.req_id, port_opened)
+                        .await
+                    {
                         warn!("Could not send handshake response to {peer_addr}: {error}");
                         break;
                     }
@@ -139,11 +208,6 @@ impl ConnectionController {
 
                     // Unknown sites can be rejected without entering the shared
                     // site-request path.
-                    #[derive(serde::Serialize, serde::Deserialize)]
-                    struct SiteRequest {
-                        site: String,
-                    }
-
                     if request.body::<SiteRequest>().is_err() {
                         let res = Self::unknown_site_response();
                         let site = request
@@ -190,6 +254,14 @@ impl ConnectionController {
     }
 
     async fn handle_request(&mut self, req: ZeroNetRequest) -> ResponseType {
+        let site_request = match req.body::<SiteRequest>() {
+            Ok(request) => request,
+            Err(_) => return ResponseType::InvalidRequest,
+        };
+        if !self.ensure_site_served(&site_request.site).await {
+            return Self::unknown_site_response();
+        }
+
         match req.cmd.as_str() {
             "pex" => self.handle_pex(req),
             "getHashfield" => self.get_hashfield(req),
@@ -202,6 +274,50 @@ impl ConnectionController {
             }
         }
     }
+    /// Ensure newly-added sites are loaded into this listener's independent
+    /// controller, while honoring the UI controller's current serving state.
+    async fn ensure_site_served(&mut self, address: &str) -> bool {
+        if !self.site_registry.is_serving(address) {
+            return false;
+        }
+        let Some(storage) = self.site_registry.storage_for(address) else {
+            return false;
+        };
+
+        if let Some(site) = self.sites_controller.sites.get_mut(address) {
+            site.modify_storage(storage);
+            if !site.content_exists() {
+                if let Err(error) = site.load_content().await {
+                    warn!("Could not reload served site {address}: {error}");
+                    return false;
+                }
+            }
+            return site.content_exists();
+        }
+
+        let path = ENV.data_path.join(address);
+        if !path.exists() {
+            warn!("Served site directory is missing for {address}");
+            return false;
+        }
+
+        let mut site = match Site::new(address, path) {
+            Ok(site) => site,
+            Err(error) => {
+                warn!("Could not initialise newly-served site {address}: {error}");
+                return false;
+            }
+        };
+        site.modify_storage(storage);
+        if let Err(error) = site.load_content().await {
+            warn!("Could not load newly-served site {address}: {error}");
+            return false;
+        }
+
+        self.sites_controller.sites.insert(address.to_string(), site);
+        true
+    }
+
 }
 
 impl ConnectionController {
@@ -214,10 +330,23 @@ impl ConnectionController {
 
     fn handle_pex(&mut self, req: ZeroNetRequest) -> ResponseType {
         if let Ok(res) = req.body::<Pex>() {
-            let site = &res.site;
+            let site_address = res.site.clone();
             let need = res.need;
-            if self.sites_controller.sites.contains_key(site) {
-                let site = self.sites_controller.sites.get_mut(site).unwrap();
+            let tracker_peers = self.tracker_peer_cache.peers_for(&site_address);
+            if self.sites_controller.sites.contains_key(&site_address) {
+                let site = self
+                    .sites_controller
+                    .sites
+                    .get_mut(&site_address)
+                    .unwrap();
+
+                // PEX can expose tracker-discovered peers before we have
+                // attempted direct connections to them.
+                for address in tracker_peers {
+                    let key = address.to_string();
+                    site.peers.entry(key).or_insert_with(|| Peer::new(address));
+                }
+
                 let mut peers = res.peers;
                 if let Some(peers_onion) = res.peers_onion {
                     peers.extend(peers_onion);
@@ -421,5 +550,27 @@ impl ConnectionController {
             error!("Error Parsing Request Body: Invalid Update Request {req:?}");
             ResponseType::InvalidRequest
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_complete_zero_v2_handshakes_without_requiring_peer_service() {
+        let handshake = crate::net::handshake().1;
+        assert!(is_valid_peer_handshake(&handshake));
+    }
+
+    #[test]
+    fn rejects_wrong_protocol_and_empty_peer_identity() {
+        let mut handshake = crate::net::handshake().1;
+        handshake.protocol = "v1".into();
+        assert!(!is_valid_peer_handshake(&handshake));
+
+        handshake.protocol = "v2".into();
+        handshake.peer_id.clear();
+        assert!(!is_valid_peer_handshake(&handshake));
     }
 }
