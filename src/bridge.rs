@@ -13,6 +13,7 @@ use crate::{core::error::Error, discovery};
 const PROTOCOL_NAME: &str = "zeronet-bridge";
 const PROTOCOL_VERSION: u64 = 1;
 const DISCOVERY_PORT: u16 = 1544;
+type DispatchError = (String, String);
 
 // LAN discovery is configured once per bridge process. Site lists can then
 // change without changing the peer identity or advertised fileserver port.
@@ -41,7 +42,7 @@ fn error_response(id: Value, code: &str, message: impl Into<String>) -> Value {
     })
 }
 
-fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, (String, String)> {
+fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, DispatchError> {
     params
         .get(key)
         .and_then(Value::as_str)
@@ -54,7 +55,7 @@ fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, (String,
         })
 }
 
-fn required_u64(params: &Value, key: &str) -> Result<u64, (String, String)> {
+fn required_u64(params: &Value, key: &str) -> Result<u64, DispatchError> {
     params
         .get(key)
         .and_then(Value::as_u64)
@@ -69,7 +70,7 @@ fn required_u64(params: &Value, key: &str) -> Result<u64, (String, String)> {
 fn required_string_array(
     params: &Value,
     key: &str,
-) -> Result<Vec<String>, (String, String)> {
+) -> Result<Vec<String>, DispatchError> {
     let values = params
         .get(key)
         .and_then(Value::as_array)
@@ -100,7 +101,7 @@ fn required_string_array(
 async fn dispatch(
     method: &str,
     params: &Value,
-) -> Result<Value, (String, String)> {
+) -> Result<Value, DispatchError> {
     match method {
         "system.ping" => Ok(json!({
             "name": "zeronet-rs",
