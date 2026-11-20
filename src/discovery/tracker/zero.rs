@@ -17,6 +17,7 @@ use std::{
 };
 
 use decentnet_protocol::address::PeerAddr;
+use log::*;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use tor_stream::TorStream;
@@ -197,8 +198,8 @@ fn announce_stream<S: Read + Write>(
         // ip4 preserves compatibility with older AnnounceZero trackers.
         // The response parser accepts IPv4, IPv6 and onion encodings.
         need_types: vec!["ip4".into(), "ipv4".into(), "ipv6".into()],
-        // Real service types remain empty until the peer listener is active
-        // and externally reachable service types can be established.
+        // Advertise IPv6 only when a local CJDNS or Yggdrasil route
+        // provides a matching source address for incoming peer connections.
         add,
         need_num: 20,
     };
