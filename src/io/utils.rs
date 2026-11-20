@@ -25,6 +25,7 @@ use crate::{
             User,
         },
     },
+    discovery::tracker::validate_tracker_address,
     environment::{DEF_PEERS_FILE_PATH, DEF_TRACKERS_FILE_PATH, ENV},
 };
 
@@ -381,7 +382,6 @@ pub async fn load_strings_from_path(path: &PathBuf) -> Vec<String> {
     }
     strings.extract_if(.., |peer| !peer.is_empty()).collect()
 }
-
 
 #[cfg(test)]
 mod tracker_list_tests {
