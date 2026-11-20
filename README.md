@@ -96,3 +96,26 @@ Try `cargo clean` and `cargo build`.
 
 ## License
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fcanewsin%2Fzeronet-rs.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fcanewsin%2Fzeronet-rs?ref=badge_large)
+
+## Tracker configuration
+
+Tracker endpoints are loaded from `assets/trackers.txt`, one endpoint per
+line. The file is intentionally empty by default: no historical tracker is
+treated as live or trusted without an interoperability check.
+
+Supported entries are:
+
+- `zero://host:port` for the native ZeroNet MessagePack tracker protocol.
+- `http://host:port/announce` for BitTorrent HTTP trackers.
+- `udp://host:port/announce` for BitTorrent UDP trackers.
+- Bare `host:port` entries remain HTTP for legacy compatibility.
+
+Blank lines and lines beginning with `#` are ignored. Duplicate entries are
+removed, malformed addresses and unsupported schemes are skipped with a
+warning, and the original order is preserved. Configuration parsing does not
+perform DNS lookups.
+
+The current native `zero://` transport supports clear-TCP clearnet endpoints.
+Certificate-pinned TLS, Tor/onion transport and RSA onion-signing challenges
+are not implemented yet. Onion and pinned endpoints are rejected explicitly,
+not sent through the system DNS resolver or downgraded to clear TCP.
