@@ -109,10 +109,10 @@ impl Site {
             if let Some(content) = self.content(Some(inner_path)) {
                 valid_signers.extend(content.signers.clone());
             }
-        } else if let Some(rules) = self.get_file_rules(inner_path)
-            && let Some(Value::String(signers)) = rules.get("signers")
-        {
-            valid_signers.insert(signers.clone());
+        } else if let Some(rules) = self.get_file_rules(inner_path) {
+            if let Some(Value::String(signers)) = rules.get("signers") {
+                valid_signers.insert(signers.clone());
+            }
         }
         valid_signers.insert(self.address().to_string());
         valid_signers
