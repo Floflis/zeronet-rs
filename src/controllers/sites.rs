@@ -219,12 +219,7 @@ impl SitesController {
         let has_params = params.is_some();
         let mut stmt = conn.prepare(&query).unwrap();
         let count = stmt.column_count();
-        let names = {
-            stmt.column_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()
-        };
+        let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         let res = if has_params {
             stmt.query(params![params])
         } else {
