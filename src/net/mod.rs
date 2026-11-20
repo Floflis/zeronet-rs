@@ -29,8 +29,8 @@ pub fn handshake<'a>() -> (&'a str, Handshake) {
             crypt: None,
             crypt_supported: vec![],
             onion: None,
-            // The normal startup path does not start ConnectionController.
-            // Never advertise an unverified peer listener as reachable.
+            // The peer listener is active during normal daemon startup,
+            // but a local bind does not prove external reachability.
             port_opened: Some(false),
             target_address: None,
         },
