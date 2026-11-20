@@ -1,5 +1,4 @@
 #![feature(trait_alias)]
-#![feature(let_chains)]
 
 pub mod bridge;
 pub mod common;
@@ -65,110 +64,112 @@ async fn main() -> Result<(), Error> {
     let mut user = user_storage.values().next().unwrap().clone();
     let sub_cmd = (*MATCHES).subcommand();
     if let Some((cmd, args)) = sub_cmd {
-        if (cmd.starts_with("site") || cmd.starts_with("db"))
-            && let Some(mut site_args) = args.get_many::<String>("site")
-        {
-            let site_addr = site_args.next().unwrap();
-            let mut site = Site::new(site_addr, (ENV.data_path.clone()).join(site_addr))?;
-            if let Some(storage) = site_storage.get(site_addr).cloned() {
-                site.modify_storage(storage);
-            }
-            match cmd {
-                "siteFindPeers" | "siteNeedFile" | "siteDownload" | "siteUpdate"
-                | "sitePeerExchange" | "siteFetchChanges" => {
-                    add_peers_to_site(&mut site).await?;
-                    let mut found_connectable_peer = false;
-                    while !found_connectable_peer {
-                        if let Some(peer_id) = site.peers.keys().next() {
-                            let peer_id = peer_id.clone();
-                            let peer = site.peers.values_mut().next().unwrap();
-                            let conn = peer.connection_mut().unwrap();
-                            let mut protocol = net::Protocol::new(conn);
-                            use decentnet_protocol::{interface::RequestImpl, Either};
-                            let res = protocol
-                                .get_file(site_addr, "content.json", 0, 0, Some(1))
-                                .await;
-                            if let Ok(res) = res {
-                                match res {
-                                    Either::Success(_) => {
-                                        found_connectable_peer = true;
-                                    }
-                                    Either::Error(err) => {
-                                        if err.error == "Unknown site" {
-                                            debug!("Site Not Served by Peer Querying Next Peer");
-                                        } else {
-                                            error!("Unknown Error : {}", err.error);
+        if cmd.starts_with("site") || cmd.starts_with("db") {
+            if let Some(mut site_args) = args.get_many::<String>("site") {
+                let site_addr = site_args.next().unwrap();
+                let mut site = Site::new(site_addr, (ENV.data_path.clone()).join(site_addr))?;
+                if let Some(storage) = site_storage.get(site_addr).cloned() {
+                    site.modify_storage(storage);
+                }
+                match cmd {
+                    "siteFindPeers" | "siteNeedFile" | "siteDownload" | "siteUpdate"
+                    | "sitePeerExchange" | "siteFetchChanges" => {
+                        add_peers_to_site(&mut site).await?;
+                        let mut found_connectable_peer = false;
+                        while !found_connectable_peer {
+                            if let Some(peer_id) = site.peers.keys().next() {
+                                let peer_id = peer_id.clone();
+                                let peer = site.peers.values_mut().next().unwrap();
+                                let conn = peer.connection_mut().unwrap();
+                                let mut protocol = net::Protocol::new(conn);
+                                use decentnet_protocol::{interface::RequestImpl, Either};
+                                let res = protocol
+                                    .get_file(site_addr, "content.json", 0, 0, Some(1))
+                                    .await;
+                                if let Ok(res) = res {
+                                    match res {
+                                        Either::Success(_) => {
+                                            found_connectable_peer = true;
                                         }
-                                        site.peers.remove(&peer_id);
+                                        Either::Error(err) => {
+                                            if err.error == "Unknown site" {
+                                                debug!(
+                                                    "Site Not Served by Peer Querying Next Peer"
+                                                );
+                                            } else {
+                                                error!("Unknown Error : {}", err.error);
+                                            }
+                                            site.peers.remove(&peer_id);
+                                        }
                                     }
+                                } else {
+                                    error!("Communication Error {res:#?}");
                                 }
-                            } else {
-                                error!("Communication Error {res:#?}");
                             }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
-            }
-            match cmd {
-                "siteCreate" => site_create(&mut user, true).await?,
-                "siteNeedFile" => {
-                    let inner_path = site_args.next().unwrap();
-                    site_need_file(&mut site, inner_path.into()).await?
-                }
-                "siteDownload" => download_site(&mut site).await?,
-                "siteSign" => {
-                    let private_key = if let Some(private_key) = site_args.next() {
-                        private_key.to_owned()
-                    } else if let Some(key) = user.sites.get(site.address()) {
-                        if let Some(key) = key.get_privkey() {
-                            key
+                match cmd {
+                    "siteCreate" => site_create(&mut user, true).await?,
+                    "siteNeedFile" => {
+                        let inner_path = site_args.next().unwrap();
+                        site_need_file(&mut site, inner_path.into()).await?
+                    }
+                    "siteDownload" => download_site(&mut site).await?,
+                    "siteSign" => {
+                        let private_key = if let Some(private_key) = site_args.next() {
+                            private_key.to_owned()
+                        } else if let Some(key) = user.sites.get(site.address()) {
+                            if let Some(key) = key.get_privkey() {
+                                key
+                            } else {
+                                unreachable!("No private key for site");
+                            }
                         } else {
                             unreachable!("No private key for site");
-                        }
-                    } else {
-                        unreachable!("No private key for site");
-                    };
-                    site_sign(&mut site, private_key).await?
+                        };
+                        site_sign(&mut site, private_key).await?
+                    }
+                    "siteFileEdit" => {
+                        let inner_path = site_args.next().unwrap();
+                        site_file_edit(&mut site, inner_path.into()).await?;
+                    }
+                    "siteUpdate" => {
+                        let inner_path = site_args.next().unwrap();
+                        site_update(&mut site, Some(inner_path)).await?
+                    }
+                    "siteVerify" => check_site_integrity(&mut site).await?,
+                    "dbRebuild" => rebuild_db(&mut site, &mut db_manager).await?,
+                    "dbQuery" => {
+                        db_query(&mut site, &mut db_manager, site_args.next().unwrap()).await?
+                    }
+                    "siteFindPeers" => {
+                        let mut connectable_peers =
+                            site.peers.values().map(|peer| peer.address().to_string());
+                        save_peers(&mut connectable_peers).await;
+                    }
+                    "sitePeerExchange" => peer_exchange(&mut site).await?,
+                    "siteFetchChanges" => fetch_changes(&mut site).await?,
+                    _ => {
+                        warn!("Unknown command: {cmd}");
+                    }
                 }
-                "siteFileEdit" => {
-                    let inner_path = site_args.next().unwrap();
-                    site_file_edit(&mut site, inner_path.into()).await?;
-                }
-                "siteUpdate" => {
-                    let inner_path = site_args.next().unwrap();
-                    site_update(&mut site, Some(inner_path)).await?
-                }
-                "siteVerify" => check_site_integrity(&mut site).await?,
-                "dbRebuild" => rebuild_db(&mut site, &mut db_manager).await?,
-                "dbQuery" => {
-                    db_query(&mut site, &mut db_manager, site_args.next().unwrap()).await?
-                }
-                "siteFindPeers" => {
-                    let mut connectable_peers =
-                        site.peers.values().map(|peer| peer.address().to_string());
-                    save_peers(&mut connectable_peers).await;
-                }
-                "sitePeerExchange" => peer_exchange(&mut site).await?,
-                "siteFetchChanges" => fetch_changes(&mut site).await?,
-                _ => {
-                    warn!("Unknown command: {cmd}");
-                }
+                user.get_site_data(site_addr, true);
+                let mut storage = site.storage.clone();
+                storage.settings.serving = true;
+                site.modify_storage(storage);
+                site.save_storage().await?;
             }
-            user.get_site_data(site_addr, true);
-            let mut storage = site.storage.clone();
-            storage.settings.serving = true;
-            site.modify_storage(storage);
-            site.save_storage().await?;
-        } else if cmd.starts_with("peer")
-            && let Some(mut peer_args) = args.get_many::<String>("peer")
-        {
-            let peer = peer_args.next().unwrap();
-            info!("{peer:?}");
-            match cmd {
-                "peerPing" => peer_ping(peer).await?,
-                _ => {
-                    warn!("Unknown command: {cmd}");
+        } else if cmd.starts_with("peer") {
+            if let Some(mut peer_args) = args.get_many::<String>("peer") {
+                let peer = peer_args.next().unwrap();
+                info!("{peer:?}");
+                match cmd {
+                    "peerPing" => peer_ping(peer).await?,
+                    _ => {
+                        warn!("Unknown command: {cmd}");
+                    }
                 }
             }
         } else if cmd.starts_with("crypt") {
@@ -220,12 +221,15 @@ async fn main() -> Result<(), Error> {
                     let name = args.next().unwrap();
                     let manifest = PluginManifest::load(name).await;
                     let manifest_path = PathBuf::from(format!("plugins/{name}/manifest.json"));
-                    if manifest.is_ok()
-                        && let Some(private_key) = args.next()
-                    {
-                        let manifest = manifest.unwrap().sign_plugin(private_key).await.unwrap();
-                        let contents = serde_json::to_string_pretty(&manifest).unwrap();
-                        tokio::fs::write(manifest_path, contents).await?;
+                    if manifest.is_ok() {
+                        if let Some(private_key) = args.next() {
+                            let manifest =
+                                manifest.unwrap().sign_plugin(private_key).await.unwrap();
+                            let contents = serde_json::to_string_pretty(&manifest).unwrap();
+                            tokio::fs::write(manifest_path, contents).await?;
+                        } else {
+                            error!("pluginSign cmd requires private key to sign");
+                        }
                     } else {
                         error!("pluginSign cmd requires private key to sign");
                     };

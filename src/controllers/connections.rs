@@ -277,11 +277,11 @@ impl ConnectionController {
 
         if let Some(site) = self.sites_controller.sites.get_mut(address) {
             site.modify_storage(storage);
-            if !site.content_exists()
-                && let Err(error) = site.load_content().await
-            {
-                warn!("Could not reload served site {address}: {error}");
-                return false;
+            if !site.content_exists() {
+                if let Err(error) = site.load_content().await {
+                    warn!("Could not reload served site {address}: {error}");
+                    return false;
+                }
             }
             return site.content_exists();
         }

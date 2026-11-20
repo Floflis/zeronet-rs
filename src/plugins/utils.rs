@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use futures::executor::block_on;
 use log::error;
-use wit_bindgen_wasmer::wasmer::{imports, Cranelift, Module, Store};
+use wai_bindgen_wasmer::wasmer::sys::Cranelift;
+use wai_bindgen_wasmer::wasmer::{imports, Module, Store};
 
 use crate::plugins::{
     core::{manifest::PluginManifest, plugin::Plugin},

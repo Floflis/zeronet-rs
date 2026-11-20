@@ -82,10 +82,10 @@ impl SitesController {
             site = Site::new(&address_str, ENV.data_path.join(address_str.clone())).unwrap();
             &mut site
         };
-        if let Some(addr) = self.sites_addr.get(address)
-            && site.content_path().is_file()
-        {
-            return Ok((address.clone(), addr.clone()));
+        if let Some(addr) = self.sites_addr.get(address) {
+            if site.content_path().is_file() {
+                return Ok((address.clone(), addr.clone()));
+            }
         }
         trace!(
             "Spinning up actor for site zero://{}",
@@ -118,10 +118,10 @@ impl SitesController {
     }
 
     pub fn get_by_key(&mut self, key: String) -> Result<(Address, Addr<Site>), Error> {
-        if let Some(address) = self.nonce.get(&key)
-            && let Some(addr) = self.sites_addr.get(address)
-        {
-            return Ok((address.clone(), addr.clone()));
+        if let Some(address) = self.nonce.get(&key) {
+            if let Some(addr) = self.sites_addr.get(address) {
+                return Ok((address.clone(), addr.clone()));
+            }
         }
         error!("No site found for key {key}");
         Err(Error::MissingError)
@@ -219,12 +219,7 @@ impl SitesController {
         let has_params = params.is_some();
         let mut stmt = conn.prepare(&query).unwrap();
         let count = stmt.column_count();
-        let names = {
-            stmt.column_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()
-        };
+        let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         let res = if has_params {
             stmt.query(params![params])
         } else {
