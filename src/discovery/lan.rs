@@ -35,7 +35,7 @@ lazy_static! {
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
-fn is_empty_sites(sites: &Vec<ByteBuf>) -> bool {
+fn is_empty_sites(sites: &[ByteBuf]) -> bool {
     sites.is_empty()
 }
 
@@ -294,10 +294,8 @@ impl LocalDiscovery {
                     }
                 };
 
-                if changed {
-                    if let Err(error) = self.request_site_list(&peer).await {
-                        debug!("Could not request LAN site list: {error}");
-                    }
+                if changed && let Err(error) = self.request_site_list(&peer).await {
+                    debug!("Could not request LAN site list: {error}");
                 }
             }
             "siteListRequest" => {
