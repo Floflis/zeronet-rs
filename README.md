@@ -145,3 +145,23 @@ public internet. Until external reachability and supported service types can
 be verified, peer handshakes continue to report `port_opened=false` and
 ZeroNet tracker announces keep `add=[]`. Router/NAT/firewall checks and
 service-type advertisement remain separate work.
+
+## IPv4, IPv6 and overlay mesh peers
+
+The peer listener defaults to dual-stack wildcard binding. Use
+`--fileserver_ip_type=ipv4`, `ipv6`, or `dual` to select the address
+families. An explicit non-wildcard `--fileserver_ip` keeps the listener scoped
+to that interface address.
+
+CJDNS and Yggdrasil use ordinary IPv6 sockets, so no mesh-specific peer
+transport is required. Before a native `zero://` tracker announce, the client
+performs local UDP route lookups for CJDNS (`fc00::/8`) and Yggdrasil
+(`0200::/7`). When a mesh route supplies a matching local IPv6 source
+address, the announce advertises the `ipv6` service type. No test datagram is
+sent by these route lookups.
+
+The existing LAN discovery service remains IPv4-broadcast based. Overlay mesh
+peer discovery uses tracker announces and the existing IPv6 peer exchange;
+IPv6 LAN multicast discovery is separate work. Cross-node testing on real
+CJDNS and Yggdrasil networks is still required before claiming full mesh
+interoperability.
