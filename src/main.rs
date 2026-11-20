@@ -94,7 +94,9 @@ async fn main() -> Result<(), Error> {
                                         }
                                         Either::Error(err) => {
                                             if err.error == "Unknown site" {
-                                                debug!("Site Not Served by Peer Querying Next Peer");
+                                                debug!(
+                                                    "Site Not Served by Peer Querying Next Peer"
+                                                );
                                             } else {
                                                 error!("Unknown Error : {}", err.error);
                                             }
