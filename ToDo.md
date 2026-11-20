@@ -37,16 +37,17 @@ The Python reference implementation is `HelloZeroNet/ZeroNet`'s `plugins/Announc
 - [x] Implement the single-site AnnounceZero request shape and required fields: `hashes`, `onions`, `port`, `need_types`, `need_num`, and `add`.
 - [ ] Start and supervise the peer TCP listener in the normal startup path, then determine externally reachable service types for `add`; a local bind alone is not proof of public reachability. Until then, outgoing handshakes report `port_opened=false` rather than claiming an inactive listener.
   - [ ] Support the optional `delete` behavior used when announcing the complete set of locally served sites (multi-site full announce is not implemented yet).
-  - [x] Keep onion signing (`onion_sign_this` / `onion_signs`) out of this clearnet-only announce path and return an explicit unsupported error if challenged. Do not add I2P.
+  - [x] Route native `zero://*.onion` tracker connections through the existing `tor-stream` dependency and a local Tor SOCKS5 proxy, preserving the onion hostname instead of resolving it with system DNS. Default proxy: `127.0.0.1:9050`; override with `ZERONET_TOR_SOCKS`.
+- [x] Keep onion signing (`onion_sign_this` / `onion_signs`) out of scope until local onion-service keys are managed; return an explicit unsupported error if challenged. Do not add I2P.
 - [x] Parse and validate response `peers` entries for `ip4`, `ipv4`, `ipv6`, and `onion` byte encodings (where the dependency feature supports them).
 - [x] Add Python-generated MessagePack fixtures and tests for successful announces, empty peer sets, malformed responses, connection failures, request IDs, duplicate peers, and multiple site groups.
 - [ ] Verify peer insertion, deduplication, source attribution, and normal peer-handshake validation after tracker discovery against a real Python ZeroNet tracker.
-- [x] Document current limits: clearnet clear-TCP endpoints only; certificate-pinned TLS, Tor transport/signing, multi-site `delete`, and service-type advertisement are not implemented. Do not claim full compatibility until real-tracker testing.
+- [x] Document current limits: clearnet native trackers use clear TCP and onion trackers use local Tor SOCKS5; certificate-pinned TLS, RSA onion signing, multi-site `delete`, and service-type advertisement are not implemented. Do not claim full compatibility until real-tracker testing.
 
 ### Tracker bootstrap and configuration
 
 - [x] Load tracker addresses from `assets/trackers.txt` independently from LAN discovery. The file remains empty by default; no unverified bootstrap endpoint is shipped.
-- [x] Validate supported schemes explicitly (`zero://`, `udp://`, and `http://`); reject unsupported `https://`, unknown schemes, malformed hosts/ports, onion endpoints without Tor, and pinned endpoints without TLS.
+- [x] Validate supported schemes explicitly (`zero://`, `udp://`, and `http://`); reject unsupported `https://`, unknown schemes, malformed hosts/ports, onion URLs outside native `zero://`, and pinned endpoints without TLS.
 - [x] Keep the bootstrap list empty until candidate endpoints have been checked for current operation, protocol compatibility, and maintainership. Do not copy historical IPs or onion addresses from old ZeroNet configurations as presumed-live defaults.
 - [x] Add bounded TCP connect/read/write timeouts and isolate tracker failures with the existing `join_all` discovery flow. Retry/backoff remain future work.
 - [x] Add tests for empty configuration, comments/blank lines, duplicate entries, malformed addresses, unsupported schemes, and mixed tracker protocols.
