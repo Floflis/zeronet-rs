@@ -115,10 +115,10 @@ removed, malformed addresses and unsupported schemes are skipped with a
 warning, and the original order is preserved. Configuration parsing does not
 perform DNS lookups.
 
-The current native `zero://` transport supports clear-TCP clearnet endpoints.
-Certificate-pinned TLS, Tor/onion transport and RSA onion-signing challenges
-are not implemented yet. Onion and pinned endpoints are rejected explicitly,
-not sent through the system DNS resolver or downgraded to clear TCP.
+The current native `zero://` transport supports clear-TCP clearnet endpoints
+and Tor-routed onion tracker endpoints. Certificate-pinned TLS and RSA
+onion-signing challenges are not implemented yet. Pinned endpoints are
+rejected explicitly instead of being downgraded to clear TCP.
 
 Native `zero://*.onion:port` endpoints are routed through a local Tor SOCKS5
 proxy using the hostname as supplied, so the system resolver is not asked to
