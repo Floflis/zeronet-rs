@@ -169,6 +169,9 @@ impl SitesController {
 
     fn update_sites_changed(&mut self) {
         self.sites_changed = current_unix_epoch();
+
+        // Keep the core LAN announcer in sync when sites are added or removed.
+        crate::discovery::lan::set_local_sites(self.sites.keys().cloned().collect());
     }
 }
 
