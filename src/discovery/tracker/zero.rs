@@ -429,6 +429,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routes_onion_tracker_through_socks5_without_local_dns() {
+        let tracker_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let tracker_address = tracker_listener.local_addr().unwrap();
+        let socks_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let socks_address = socks_listener.local_addr().unwrap();
+        let fixture = fixture(PYTHON_RESPONSE_FIXTURE);
+
+        let tracker = thread::spawn(move || {
+            let (mut stream, _) = tracker_listener.accept().unwrap();
+            let handshake: IncomingHandshake =
+                rmp_serde::from_read(&mut stream).expect("handshake request");
+            assert_eq!(handshake.cmd, "handshake");
+
+            let ack = serde_json::json!({"cmd": "response", "to": 0});
+            rmp_serde::encode::write_named(&mut stream, &ack).unwrap();
+
+            let announce: IncomingAnnounce =
+                rmp_serde::from_read(&mut stream).expect("announce request");
+            assert_eq!(announce.cmd, "announce");
+            stream.write_all(&fixture).unwrap();
+        });
+
+        // This local SOCKS5 test proxy verifies that the onion name is sent
+        // as a domain (ATYP=3), not resolved by the client before connecting.
+        let socks = thread::spawn(move || {
+            let (mut client, _) = socks_listener.accept().unwrap();
+
+            let mut greeting = [0u8; 2];
+            client.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting[0], 5);
+            let mut methods = vec![0u8; greeting[1] as usize];
+            client.read_exact(&mut methods).unwrap();
+            assert!(methods.contains(&0));
+            client.write_all(&[5, 0]).unwrap();
+
+            let mut request = [0u8; 4];
+            client.read_exact(&mut request).unwrap();
+            assert_eq!(request, [5, 1, 0, 3]);
+
+            let mut host_len = [0u8; 1];
+            client.read_exact(&mut host_len).unwrap();
+            let mut host = vec![0u8; host_len[0] as usize];
+            client.read_exact(&mut host).unwrap();
+            assert_eq!(String::from_utf8(host).unwrap(), "tracker.example.onion");
+
+            let mut target_port = [0u8; 2];
+            client.read_exact(&mut target_port).unwrap();
+            assert_eq!(u16::from_be_bytes(target_port), 15441);
+
+            let mut remote = TcpStream::connect(tracker_address).unwrap();
+            client
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+                .unwrap();
+
+            let mut client_reader = client.try_clone().unwrap();
+            let mut remote_writer = remote.try_clone().unwrap();
+            let upstream = thread::spawn(move || io::copy(&mut client_reader, &mut remote_writer));
+            let _ = io::copy(&mut remote, &mut client);
+            drop(client);
+            let _ = upstream.join();
+        });
+
+        let previous_proxy = std::env::var_os("ZERONET_TOR_SOCKS");
+        std::env::set_var("ZERONET_TOR_SOCKS", socks_address.to_string());
+        let result = zero_announce_onion(
+            "tracker.example.onion".to_string(),
+            15441,
+            vec![0x42; 32],
+            15441,
+        )
+        .await;
+        match previous_proxy {
+            Some(value) => std::env::set_var("ZERONET_TOR_SOCKS", value),
+            None => std::env::remove_var("ZERONET_TOR_SOCKS"),
+        }
+
+        let peers = result.unwrap();
+        tracker.join().unwrap();
+        socks.join().unwrap();
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[tokio::test]
     async fn returns_connection_errors_without_panicking() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
