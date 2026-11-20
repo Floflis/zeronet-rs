@@ -54,22 +54,10 @@ impl Discovery for Site {
             }
         }
 
-        // LAN discovery is deliberately best-effort. Tracker discovery must
-        // continue working when broadcast is unavailable or filtered by the OS.
-        let site_address = self.address().to_owned();
-        let peer_id = ENV.peer_id.clone();
-        let fileserver_port = ENV.fileserver_port;
-        let revision = ENV.rev as u64;
-
-        match tokio::task::spawn_blocking(move || {
-            lan::discover(&site_address, &peer_id, fileserver_port, revision)
-        })
-        .await
-        {
-            Ok(Ok(mut lan_peers)) => res_all.append(&mut lan_peers),
-            Ok(Err(error)) => debug!("LAN discovery unavailable: {error}"),
-            Err(error) => warn!("LAN discovery task failed: {error}"),
-        }
+        // LAN discovery is a native core service, not a plugin. It can
+        // answer inbound requests continuously and return cached peers here.
+        let mut lan_peers = lan::discover(self.address()).await;
+        res_all.append(&mut lan_peers);
 
         // Trackers, LAN discovery and the local peer list can overlap.
         let mut seen = HashSet::new();

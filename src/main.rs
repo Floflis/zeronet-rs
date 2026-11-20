@@ -30,6 +30,30 @@ async fn main() -> Result<(), Error> {
     let plugins = &*PLUGINS;
     let user_storage = &*USER_STORAGE;
     let site_storage = &*SITE_STORAGE;
+
+    // Start native LAN discovery for every local site with a content file.
+    // The service is best-effort and remains part of the core, independent of plugins.
+    let local_sites = site_storage
+        .keys()
+        .filter(|address| {
+            ENV.data_path
+                .join(address.as_str())
+                .join("content.json")
+                .is_file()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Err(error) = discovery::lan::start(
+        local_sites,
+        ENV.peer_id.clone(),
+        ENV.fileserver_port,
+        ENV.rev as u64,
+    )
+    .await
+    {
+        warn!("Native LAN discovery unavailable: {error}");
+    }
+
     let mut db_manager = DbManager::new();
     let mut user = user_storage.values().next().unwrap().clone();
     let sub_cmd = (*MATCHES).subcommand();

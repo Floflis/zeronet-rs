@@ -86,7 +86,7 @@ claimed; the PR's GitHub Actions checks are the compilation gate.
 
 | Area | zerunet findings | zeronet-rs findings | Decision |
 |---|---|---|---|
-| LAN peer discovery | MessagePack broadcast on UDP 1544; discovery request/response followed by a site-list exchange | No equivalent LAN discovery module found | **Port first**, reimplementing the wire exchange and retaining normal peer handshake validation |
+| LAN peer discovery | MessagePack broadcast on UDP 1544; discovery request/response followed by a site-list exchange | Native core service now handles requests, responses, periodic announcements and site-list exchange | Keep in core; validate against AnnounceLocal fixtures and real LAN peers |
 | BitTorrent trackers | Tracker manager and announcer skeletons | HTTP and UDP tracker announce implementations | Keep target implementation; compare edge cases later |
 | Peer connections | Actix actors and an older direct TCP connection abstraction | Async protocol crate, peer connect, handshake, ping, get-file and peer exchange | Keep target transport; do not transplant the older socket layer |
 | Content model | Older zerucontent model and deterministic JSON formatting | Newer shared zerucontent with cert/meta support | Keep target model; add compatibility tests rather than replacing it |
@@ -157,8 +157,9 @@ the full test matrix, and then re-run the audit.
 ## 🌈 Follow-up work, not included in this first integration
 
 - Add cross-implementation fixtures for the LAN discovery MessagePack messages.
-- Add a loopback integration test with two local discovery sockets.
+- Add a multi-process loopback integration test with two native discovery services.
 - Validate peer-list behavior on Linux, Windows and Android/Termux.
+- Broadcast on each active IPv4 interface, not only the limited-broadcast address.
 - Compare tracker announce behavior against the Python ZeroNet client.
 - Add a stable CLI/IPC contract before ZirohNeth starts invoking this binary.
 - Consider a library crate once the public API is stable. The future ZirohNeth
