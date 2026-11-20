@@ -114,6 +114,46 @@ in the message. This avoids colliding with a second client already listening on 
 legacy fixed port. LAN discovery is best-effort: UDP broadcast failure must not
 break tracker discovery.
 
+## 🌈 Baseline dependency security debt
+
+The repository's existing Security Audit workflow ran cargo audit against the
+resolved dependency graph and failed. These findings are in the existing dependency
+set; this LAN discovery PR does not add or update dependencies and does not modify
+Cargo.lock.
+
+### 🌈 Vulnerabilities reported
+
+| Advisory | Dependency in audit | Finding | Upstream patched version |
+|---|---|---|---|
+| RUSTSEC-2026-0443 | actix-files 0.6.10 | Windows 8.3 short-name aliases can expose hidden files such as .env and .git/config from served directories | actix-files >=0.7.4 |
+| RUSTSEC-2026-0258 | h2 0.3.27 | Unbounded empty HTTP/2 DATA frames can cause memory exhaustion or panic | h2 >=0.4.16 |
+| RUSTSEC-2026-0459 | libsqlite3-sys 0.25.2 | Bundled SQLite before 3.54.0 can disclose uninitialized page-cache bytes when opening a crafted database/WAL pair | libsqlite3-sys >=0.39.0 |
+| RUSTSEC-2026-0235 | rkyv 0.7.46 | Insufficient archive validation can permit out-of-bounds reads in archives containing Rc/Arc | rkyv >=0.8.17 |
+
+The SQLite advisory describes a local attack path requiring the process to open a
+database together with a sibling WAL file supplied by a less-trusted party. The
+Actix advisory is Windows-specific. These differences matter when prioritizing
+remediation, but neither should be dismissed.
+
+### 🌈 Additional audit warnings
+
+The same audit reports unmaintained dependencies:
+
+- bincode 1.3.3 (RUSTSEC-2025-0141)
+- fxhash 0.2.1 (RUSTSEC-2025-0057)
+- humantime 2.4.0 (RUSTSEC-2026-0542)
+- mach 0.3.2 (RUSTSEC-2020-0168)
+- proc-macro-error 1.0.4 (RUSTSEC-2024-0370)
+- rand_os 0.1.3 (RUSTSEC-2025-0124)
+
+It also reports unsound API advisories for memmap2 0.5.10
+(RUSTSEC-2026-0186) and secp256k1 0.19.0 (RUSTSEC-2022-0070).
+
+These findings predate the LAN discovery changes. They require a separate dependency
+upgrade and compatibility pass. Do not silence the audit or add blanket ignores to
+make CI green; update affected dependencies, verify API/MSRV compatibility, run
+the full test matrix, and then re-run the audit.
+
 ## 🌈 Follow-up work, not included in this first integration
 
 - Add cross-implementation fixtures for the LAN discovery MessagePack messages.
