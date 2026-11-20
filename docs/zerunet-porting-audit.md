@@ -69,9 +69,10 @@ cargo test --workspace --all-features
 cargo build --release
 ~~~
 
-The repository's **tools.yml** CI workflow runs **cargo test --workspace --all-features**
-and Clippy using **nightly-2025-04-26**; formatting is checked with stable rustfmt.
-A PR against **main** should therefore exercise the project's own build environment.
+The repository's **tools.yml** CI workflow runs tests, Clippy and rustfmt with
+**nightly-2025-04-26**. The previous stable-rustfmt job could not parse the project's
+**let_chains** syntax under edition 2021, so the formatter is aligned with the same
+nightly toolchain required by the source. A PR against **main** exercises this CI path.
 
 The target currently enables **decentnet_protocol**'s **full** feature, which includes
 its Tor support. It does not enable the protocol crate's optional **i2p** feature.
