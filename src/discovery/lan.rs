@@ -32,8 +32,12 @@ lazy_static! {
     static ref LAN_DISCOVERY: Mutex<Option<LocalDiscovery>> = Mutex::new(None);
 }
 
-fn is_zero(value: &u64) -> bool { *value == 0 }
-fn is_empty_sites(sites: &Vec<ByteBuf>) -> bool { sites.is_empty() }
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+fn is_empty_sites(sites: &Vec<ByteBuf>) -> bool {
+    sites.is_empty()
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -64,7 +68,11 @@ struct DiscoveryMessage {
 
 impl DiscoveryMessage {
     fn new(sender: Sender, command: &str, params: Params) -> Self {
-        Self { cmd: command.to_owned(), params, sender }
+        Self {
+            cmd: command.to_owned(),
+            params,
+            sender,
+        }
     }
 }
 
@@ -93,7 +101,10 @@ struct LocalDiscovery {
 }
 
 fn unix_time() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn site_hash(address: &str) -> Vec<u8> {
@@ -118,7 +129,10 @@ impl LocalDiscovery {
 
         let mut state = self.state.lock().expect("LAN discovery state poisoned");
         let changed = state.local_sites.len() != next_sites.len()
-            || state.local_sites.keys().any(|hash| !next_sites.contains_key(hash));
+            || state
+                .local_sites
+                .keys()
+                .any(|hash| !next_sites.contains_key(hash));
 
         if changed {
             state.sites_changed = unix_time();
@@ -144,7 +158,8 @@ impl LocalDiscovery {
             SocketAddr::from((Ipv4Addr::BROADCAST, DISCOVERY_PORT)),
             "discoverRequest",
             Params::default(),
-        ).await
+        )
+        .await
     }
 
     async fn request_site_list(&self, peer: &KnownPeer) -> io::Result<()> {
@@ -152,7 +167,8 @@ impl LocalDiscovery {
             SocketAddr::new(peer.address.ip(), peer.broadcast_port),
             "siteListRequest",
             Params::default(),
-        ).await
+        )
+        .await
     }
 
     async fn respond_with_site_list(&self, destination: SocketAddr) -> io::Result<()> {
@@ -160,7 +176,12 @@ impl LocalDiscovery {
             let state = self.state.lock().expect("LAN discovery state poisoned");
             (
                 state.sites_changed,
-                state.local_sites.keys().cloned().map(ByteBuf::from).collect::<Vec<_>>(),
+                state
+                    .local_sites
+                    .keys()
+                    .cloned()
+                    .map(ByteBuf::from)
+                    .collect::<Vec<_>>(),
             )
         };
 
@@ -169,8 +190,12 @@ impl LocalDiscovery {
             self.send_message(
                 destination,
                 "siteListResponse",
-                Params { sites_changed, sites: chunk.to_vec() },
-            ).await?;
+                Params {
+                    sites_changed,
+                    sites: chunk.to_vec(),
+                },
+            )
+            .await?;
         }
         Ok(())
     }
@@ -190,17 +215,23 @@ impl LocalDiscovery {
             peer.address = peer_address;
             peer.broadcast_port = message.sender.broadcast_port;
         } else {
-            state.known_peers.insert(key, KnownPeer {
-                address: peer_address,
-                broadcast_port: message.sender.broadcast_port,
-                sites_changed: message.params.sites_changed,
-                last_seen: Instant::now(),
-            });
+            state.known_peers.insert(
+                key,
+                KnownPeer {
+                    address: peer_address,
+                    broadcast_port: message.sender.broadcast_port,
+                    sites_changed: message.params.sites_changed,
+                    last_seen: Instant::now(),
+                },
+            );
         }
 
         for hash in message.params.sites.iter().take(5_000) {
             if let Some(site_address) = state.watched_sites.get(hash.as_ref()).cloned() {
-                state.peers_by_site.entry(site_address).or_default()
+                state
+                    .peers_by_site
+                    .entry(site_address)
+                    .or_default()
                     .insert(peer_address, Instant::now());
             }
         }
@@ -218,15 +249,26 @@ impl LocalDiscovery {
         let reply_address = SocketAddr::new(source.ip(), message.sender.broadcast_port);
         match message.cmd.as_str() {
             "discoverRequest" => {
-                let sites_changed = self.state.lock()
-                    .expect("LAN discovery state poisoned").sites_changed;
-                let params = Params { sites_changed, sites: Vec::new() };
-                if let Err(error) = self.send_message(reply_address, "discoverResponse", params).await {
+                let sites_changed = self
+                    .state
+                    .lock()
+                    .expect("LAN discovery state poisoned")
+                    .sites_changed;
+                let params = Params {
+                    sites_changed,
+                    sites: Vec::new(),
+                };
+                if let Err(error) = self
+                    .send_message(reply_address, "discoverResponse", params)
+                    .await
+                {
                     debug!("Could not answer LAN discover request: {error}");
                 }
             }
             "discoverResponse" => {
-                if message.sender.port <= 1 { return; }
+                if message.sender.port <= 1 {
+                    return;
+                }
                 let key = (source.ip(), message.sender.peer_id.clone());
                 let (peer, changed) = {
                     let mut state = self.state.lock().expect("LAN discovery state poisoned");
@@ -271,7 +313,9 @@ impl LocalDiscovery {
     fn prune(&self) {
         let now = Instant::now();
         let mut state = self.state.lock().expect("LAN discovery state poisoned");
-        state.known_peers.retain(|_, peer| now.duration_since(peer.last_seen) <= PEER_TIMEOUT);
+        state
+            .known_peers
+            .retain(|_, peer| now.duration_since(peer.last_seen) <= PEER_TIMEOUT);
         for peers in state.peers_by_site.values_mut() {
             peers.retain(|_, last_seen| now.duration_since(*last_seen) <= PEER_TIMEOUT);
         }
@@ -329,11 +373,17 @@ impl LocalDiscovery {
         time::sleep(QUERY_WINDOW).await;
 
         let state = self.state.lock().expect("LAN discovery state poisoned");
-        state.peers_by_site.get(site_address).map(|peers| {
-            peers.keys().copied()
-                .map(|address| Peer::new(PeerAddr::from(address)))
-                .collect()
-        }).unwrap_or_default()
+        state
+            .peers_by_site
+            .get(site_address)
+            .map(|peers| {
+                peers
+                    .keys()
+                    .copied()
+                    .map(|address| Peer::new(PeerAddr::from(address)))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -345,7 +395,11 @@ pub async fn start(
     fileserver_port: u16,
     revision: u64,
 ) -> io::Result<()> {
-    if LAN_DISCOVERY.lock().expect("LAN discovery handle poisoned").is_some() {
+    if LAN_DISCOVERY
+        .lock()
+        .expect("LAN discovery handle poisoned")
+        .is_some()
+    {
         set_local_sites(local_sites);
         return Ok(());
     }
@@ -386,8 +440,10 @@ pub async fn start(
 
 /// Replace the addresses advertised by the native LAN discovery service.
 pub fn set_local_sites(addresses: Vec<String>) {
-    if let Some(service) = LAN_DISCOVERY.lock()
-        .expect("LAN discovery handle poisoned").as_ref()
+    if let Some(service) = LAN_DISCOVERY
+        .lock()
+        .expect("LAN discovery handle poisoned")
+        .as_ref()
     {
         service.update_local_sites(addresses);
     }
@@ -395,8 +451,10 @@ pub fn set_local_sites(addresses: Vec<String>) {
 
 /// Discover LAN peers for one site using the already-running core service.
 pub async fn discover(site_address: &str) -> Vec<Peer> {
-    let service = LAN_DISCOVERY.lock()
-        .expect("LAN discovery handle poisoned").clone();
+    let service = LAN_DISCOVERY
+        .lock()
+        .expect("LAN discovery handle poisoned")
+        .clone();
     match service {
         Some(service) => service.discover_site(site_address).await,
         None => Vec::new(),
@@ -435,7 +493,10 @@ mod tests {
     fn site_hash_matches_sha256_address_hash() {
         let address = "1HeLLo4uzjaLetFx6NH3PMwFP3qbRbTf3D";
         assert_eq!(site_hash(address).len(), 32);
-        assert_eq!(site_hash(address), Sha256::digest(address.as_bytes()).to_vec());
+        assert_eq!(
+            site_hash(address),
+            Sha256::digest(address.as_bytes()).to_vec()
+        );
     }
 
     #[test]
@@ -446,7 +507,9 @@ mod tests {
     #[tokio::test]
     async fn core_answers_discover_requests_without_a_plugin() {
         let service_socket = Arc::new(
-            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("bind service socket"),
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("bind service socket"),
         );
         let client_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
@@ -483,10 +546,11 @@ mod tests {
         service.handle_message(client_address, request).await;
 
         let mut buffer = [0_u8; MAX_DATAGRAM_SIZE];
-        let (length, _) = time::timeout(Duration::from_secs(1), client_socket.recv_from(&mut buffer))
-            .await
-            .expect("core should answer promptly")
-            .expect("receive response");
+        let (length, _) =
+            time::timeout(Duration::from_secs(1), client_socket.recv_from(&mut buffer))
+                .await
+                .expect("core should answer promptly")
+                .expect("receive response");
         let response = decode_message(&buffer[..length]).expect("valid MessagePack response");
 
         assert_eq!(response.cmd, "discoverResponse");
@@ -537,6 +601,10 @@ mod tests {
 
         let state = service.state.lock().unwrap();
         let peer_address: SocketAddr = "192.0.2.10:15442".parse().unwrap();
-        assert!(state.peers_by_site.get(address).unwrap().contains_key(&peer_address));
+        assert!(state
+            .peers_by_site
+            .get(address)
+            .unwrap()
+            .contains_key(&peer_address));
     }
 }

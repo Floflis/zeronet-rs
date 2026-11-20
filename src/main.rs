@@ -35,7 +35,12 @@ async fn main() -> Result<(), Error> {
     // The service is best-effort and remains part of the core, independent of plugins.
     let local_sites = site_storage
         .keys()
-        .filter(|address| ENV.data_path.join(address.as_str()).join("content.json").is_file())
+        .filter(|address| {
+            ENV.data_path
+                .join(address.as_str())
+                .join("content.json")
+                .is_file()
+        })
         .cloned()
         .collect::<Vec<_>>();
     if let Err(error) = discovery::lan::start(
