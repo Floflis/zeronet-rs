@@ -119,3 +119,11 @@ The current native `zero://` transport supports clear-TCP clearnet endpoints.
 Certificate-pinned TLS, Tor/onion transport and RSA onion-signing challenges
 are not implemented yet. Onion and pinned endpoints are rejected explicitly,
 not sent through the system DNS resolver or downgraded to clear TCP.
+
+Native `zero://*.onion:port` endpoints are routed through a local Tor SOCKS5
+proxy using the hostname as supplied, so the system resolver is not asked to
+resolve the onion address. The default proxy is `127.0.0.1:9050`; set
+`ZERONET_TOR_SOCKS=127.0.0.1:9150` (or another SOCKS5 socket address) to use
+a different local listener. Tor must already be running. This does not yet
+create local onion services or answer RSA onion-signing challenges.
+
