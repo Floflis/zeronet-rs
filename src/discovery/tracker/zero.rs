@@ -19,6 +19,7 @@ use std::{
 use decentnet_protocol::address::PeerAddr;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
+use tor_stream::TorStream;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -151,28 +152,29 @@ fn parse_announce_response(
     Ok(peers)
 }
 
-fn announce_blocking(
-    address: SocketAddr,
-    site_hash: Vec<u8>,
-    port: u16,
-) -> io::Result<Vec<PeerAddr>> {
+fn validate_site_hash(site_hash: &[u8]) -> io::Result<()> {
     if site_hash.len() != 32 {
         return Err(invalid_data(format!(
             "ZeroNet site hash must contain 32 bytes, got {}",
             site_hash.len()
         )));
     }
+    Ok(())
+}
 
-    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
-    stream.set_nodelay(true)?;
+/// Shared ZeroNet handshake/announce exchange for direct and Tor streams.
+fn announce_stream<S: Read + Write>(
+    stream: &mut S,
+    site_hash: Vec<u8>,
+    port: u16,
+) -> io::Result<Vec<PeerAddr>> {
+    validate_site_hash(&site_hash)?;
 
     // Reuse the project's canonical ZeroNet handshake builder and serializer.
     let mut handshake = crate::net::handshake().1;
     handshake.fileserver_port = port as usize;
-    send_request(&mut stream, "handshake", 0, handshake)?;
-    read_ack(&mut stream, 0)?;
+    send_request(stream, "handshake", 0, handshake)?;
+    read_ack(stream, 0)?;
 
     let announce = AnnounceRequest {
         hashes: vec![ByteBuf::from(site_hash)],
@@ -181,15 +183,83 @@ fn announce_blocking(
         // ip4 preserves compatibility with older AnnounceZero trackers.
         // The response parser accepts IPv4, IPv6 and onion encodings.
         need_types: vec!["ip4".into(), "ipv4".into(), "ipv6".into()],
-        need_num: 20,
-        // The current Rust client has not yet implemented the Python
-        // getOpenedServiceTypes() equivalent, so it advertises no service type.
+        // Real service types remain empty until the peer listener is active
+        // and externally reachable service types can be established.
         add: Vec::new(),
+        need_num: 20,
     };
 
-    send_request(&mut stream, "announce", 1, announce)?;
-    let response: AnnounceReply = rmp_serde::from_read(&mut stream).map_err(invalid_data)?;
+    send_request(stream, "announce", 1, announce)?;
+    let response: AnnounceReply = rmp_serde::from_read(stream).map_err(invalid_data)?;
     parse_announce_response(response, 1)
+}
+
+fn announce_blocking(
+    address: SocketAddr,
+    site_hash: Vec<u8>,
+    port: u16,
+) -> io::Result<Vec<PeerAddr>> {
+    validate_site_hash(&site_hash)?;
+
+    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    stream.set_nodelay(true)?;
+
+    announce_stream(&mut stream, site_hash, port)
+}
+
+fn connect_tor_tracker(target: &str) -> io::Result<TorStream> {
+    // The dependency defaults to 127.0.0.1:9050. Allow deployments with a
+    // non-default Tor SOCKS5 listener to configure it without recompiling.
+    match std::env::var("ZERONET_TOR_SOCKS") {
+        Ok(proxy) => {
+            let proxy = proxy.parse().map_err(|error| {
+                io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid ZERONET_TOR_SOCKS address: {error}"),
+                )
+            })?;
+            TorStream::connect_with_address(proxy, target)
+        }
+        Err(std::env::VarError::NotPresent) => TorStream::connect(target),
+        Err(error) => Err(io::Error::other(format!(
+            "could not read ZERONET_TOR_SOCKS: {error}"
+        ))),
+    }
+}
+
+fn announce_onion_blocking(
+    host: String,
+    tracker_port: u16,
+    site_hash: Vec<u8>,
+    client_port: u16,
+) -> io::Result<Vec<PeerAddr>> {
+    validate_site_hash(&site_hash)?;
+
+    // Keep the .onion hostname intact. The SOCKS5 proxy must resolve it;
+    // resolving it locally would leak the lookup and fail for onion services.
+    let target = format!("{host}:{tracker_port}");
+    let mut stream = connect_tor_tracker(&target)?;
+    stream.get_ref().set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.get_ref().set_write_timeout(Some(IO_TIMEOUT))?;
+    stream.get_ref().set_nodelay(true)?;
+
+    announce_stream(&mut stream, site_hash, client_port)
+}
+
+/// Announce one site's SHA-256 hash to a native ZeroNet tracker over Tor.
+pub async fn zero_announce_onion(
+    host: String,
+    tracker_port: u16,
+    site_hash: Vec<u8>,
+    client_port: u16,
+) -> io::Result<Vec<PeerAddr>> {
+    tokio::task::spawn_blocking(move || {
+        announce_onion_blocking(host, tracker_port, site_hash, client_port)
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("Tor tracker worker failed: {error}")))?
 }
 
 /// Announce one site's SHA-256 address hash to a native zero:// tracker.
