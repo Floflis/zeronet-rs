@@ -3,7 +3,7 @@ use log::*;
 use serde_json::Value;
 use sha2::{Digest, Sha512};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::read,
     io::{Read, Write},
     net::{IpAddr, Ipv6Addr},
@@ -15,6 +15,7 @@ use tokio::{fs::File, io::AsyncReadExt};
 use zerucontent::File as ZFile;
 
 use crate::{
+    discovery::tracker::validate_tracker_address,
     core::{
         error::Error,
         io::UserIO,
@@ -321,20 +322,41 @@ pub async fn load_peers() -> Vec<String> {
     load_strings_from_path(&DEF_PEERS_FILE_PATH).await
 }
 
+/// Load tracker endpoints from assets/trackers.txt.
+///
+/// Blank lines and full-line comments are ignored. Addresses are validated
+/// without DNS lookups, duplicates are removed while preserving order, and
+/// invalid entries are skipped with a warning.
 pub fn load_trackers() -> Vec<String> {
     let file = Path::new(&*DEF_TRACKERS_FILE_PATH);
-    let buf = read(file);
-    if !file.exists() || buf.is_err() {
+    let Ok(contents) = read(file) else {
         return vec![];
+    };
+
+    parse_tracker_lines(&String::from_utf8_lossy(&contents))
+}
+
+fn parse_tracker_lines(contents: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut trackers = Vec::new();
+
+    for line in contents.lines() {
+        let tracker = line.trim();
+        if tracker.is_empty() || tracker.starts_with('#') {
+            continue;
+        }
+
+        if let Err(error) = validate_tracker_address(tracker) {
+            warn!("Ignoring invalid tracker entry {tracker:?}: {error}");
+            continue;
+        }
+
+        if seen.insert(tracker.to_ascii_lowercase()) {
+            trackers.push(tracker.to_owned());
+        }
     }
-    let mut trackers = vec![];
-    for peer in buf
-        .unwrap()
-        .split(|b| (Some(b) == b"\n".first()) || (Some(b) == b"\r".first()))
-    {
-        trackers.push(String::from_utf8(peer.to_vec()).unwrap());
-    }
-    trackers.extract_if(.., |peer| !peer.is_empty()).collect()
+
+    trackers
 }
 
 pub async fn load_strings_from_path(path: &PathBuf) -> Vec<String> {
@@ -358,4 +380,57 @@ pub async fn load_strings_from_path(path: &PathBuf) -> Vec<String> {
         }
     }
     strings.extract_if(.., |peer| !peer.is_empty()).collect()
+}
+
+
+#[cfg(test)]
+mod tracker_list_tests {
+    use super::parse_tracker_lines;
+
+    #[test]
+    fn empty_tracker_configuration_is_valid() {
+        assert!(parse_tracker_lines("").is_empty());
+        assert!(parse_tracker_lines("  \n\t\r\n").is_empty());
+    }
+
+    #[test]
+    fn ignores_blank_lines_and_comments() {
+        let trackers = parse_tracker_lines(
+            "# built-in tracker list intentionally empty\n\n  # operator note\n",
+        );
+        assert!(trackers.is_empty());
+    }
+
+    #[test]
+    fn trims_and_deduplicates_entries_preserving_order() {
+        let trackers = parse_tracker_lines(
+            " zero://127.0.0.1:15441 \n\nzero://127.0.0.1:15441\nudp://tracker.example:6969/announce\nudp://tracker.example:6969/announce\n",
+        );
+        assert_eq!(
+            trackers,
+            vec![
+                "zero://127.0.0.1:15441".to_string(),
+                "udp://tracker.example:6969/announce".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_malformed_and_unsupported_entries() {
+        let trackers = parse_tracker_lines(
+            "http://:8080\nftp://tracker.example:21\nhttps://tracker.example:443\nzero://tracker:bad\n",
+        );
+        assert!(trackers.is_empty());
+    }
+
+    #[test]
+    fn supports_mixed_tracker_protocols() {
+        let trackers = parse_tracker_lines(
+            "zero://127.0.0.1:15441\nhttp://127.0.0.1:8080/announce\nudp://127.0.0.1:6969/announce\n",
+        );
+        assert_eq!(trackers.len(), 3);
+        assert!(trackers[0].starts_with("zero://"));
+        assert!(trackers[1].starts_with("http://"));
+        assert!(trackers[2].starts_with("udp://"));
+    }
 }
