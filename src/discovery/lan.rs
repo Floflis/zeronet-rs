@@ -78,8 +78,7 @@ struct Responder {
 }
 
 fn encode_message(message: &DiscoveryMessage) -> io::Result<Vec<u8>> {
-    rmp_serde::to_vec_named(message)
-        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
+    rmp_serde::to_vec_named(message).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
 }
 
 fn decode_message(bytes: &[u8]) -> Option<DiscoveryMessage> {

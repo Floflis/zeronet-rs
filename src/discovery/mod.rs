@@ -46,9 +46,7 @@ impl Discovery for Site {
                     let mut discovered: Vec<Peer> = peers
                         .into_iter()
                         .filter(|peer| peer.port > 1)
-                        .map(|peer: IpPort| {
-                            Peer::new(PeerAddr::parse(peer.to_string()).unwrap())
-                        })
+                        .map(|peer: IpPort| Peer::new(PeerAddr::parse(peer.to_string()).unwrap()))
                         .collect();
                     res_all.append(&mut discovered);
                 }
