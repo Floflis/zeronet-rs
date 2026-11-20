@@ -5,9 +5,9 @@
 //! stream. This is intentionally distinct from BitTorrent HTTP/UDP announce.
 //!
 //! This implementation uses the existing ZeroNet handshake builder and the
-//! same named MessagePack framing as ZeroConnection. It currently supports
-//! clear-TCP clearnet tracker endpoints. TLS-pinned endpoints and Tor transport
-//! / onion signing are reported as unsupported rather than downgraded.
+//! same named MessagePack framing as ZeroConnection. Clearnet trackers use
+//! clear TCP; .onion trackers use the configured local Tor SOCKS5 proxy.
+//! Certificate-pinned TLS and onion RSA signing remain unsupported.
 
 use std::{
     collections::HashSet,
