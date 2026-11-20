@@ -32,22 +32,23 @@ Keep tracker discovery independent from LAN discovery. The current tracker addre
 
 The Python reference implementation is `HelloZeroNet/ZeroNet`'s `plugins/AnnounceZero/AnnounceZeroPlugin.py`. It does **not** use the BitTorrent UDP announce protocol or an HTTP announce endpoint: it opens a normal ZeroNet peer connection to the tracker and sends the `announce` command with a MessagePack request.
 
-- [ ] Add an explicit tracker protocol/address variant for `zero://`; never silently route it through the HTTP or BitTorrent UDP implementation.
-- [ ] Verify the exact ZeroNet peer connection, handshake, request framing, and MessagePack behavior required by the native `announce` command.
-- [ ] Implement the request fields used by the Python client: `hashes`, `onions`, `port`, `need_types`, `need_num`, and `add`.
-  - [ ] Support the optional `delete` behavior used when announcing the complete set of locally served sites.
-  - [ ] Treat onion address/signature exchange (`onion_sign_this` and `onion_signs`) as a separately scoped Tor compatibility feature; do not add I2P.
-- [ ] Parse and validate the response's per-site `peers` entries, including the address families the client actually supports (`ip4`, `ipv4`, `ipv6`, and, when Tor support is enabled, `onion`).
-- [ ] Add protocol fixtures and tests for successful announces, empty peer sets, malformed responses, connection failures, and multi-site responses.
-- [ ] Verify peer insertion, deduplication, source attribution, and normal peer-handshake validation after tracker discovery.
-- [ ] Document any unsupported Python behaviors explicitly; do not claim full `zero://` compatibility until tested against a real Python ZeroNet tracker.
+- [x] Add an explicit tracker protocol/address variant for `zero://`; never silently route it through the HTTP or BitTorrent UDP implementation.
+- [x] Reuse the existing ZeroNet handshake builder and named MessagePack framing for native `announce` over the peer TCP stream. The `announce` command is sent by the Rust tracker module because the current `zeronet_protocol` command enum does not expose it.
+- [x] Implement the single-site AnnounceZero request shape and required fields: `hashes`, `onions`, `port`, `need_types`, `need_num`, and `add`.
+- [ ] Determine and advertise reachable service types in `add` once the Rust listener exposes reliable port-open/service-type information; do not advertise loopback-only listeners.
+  - [ ] Support the optional `delete` behavior used when announcing the complete set of locally served sites (multi-site full announce is not implemented yet).
+  - [x] Keep onion signing (`onion_sign_this` / `onion_signs`) out of this clearnet-only announce path and return an explicit unsupported error if challenged. Do not add I2P.
+- [x] Parse and validate response `peers` entries for `ip4`, `ipv4`, `ipv6`, and `onion` byte encodings (where the dependency feature supports them).
+- [x] Add Python-generated MessagePack fixtures and tests for successful announces, empty peer sets, malformed responses, connection failures, request IDs, duplicate peers, and multiple site groups.
+- [ ] Verify peer insertion, deduplication, source attribution, and normal peer-handshake validation after tracker discovery against a real Python ZeroNet tracker.
+- [x] Document current limits: clearnet clear-TCP endpoints only; certificate-pinned TLS, Tor transport/signing, multi-site `delete`, and service-type advertisement are not implemented. Do not claim full compatibility until real-tracker testing.
 
 ### Tracker bootstrap and configuration
 
 - [ ] Define how tracker addresses are loaded and configured (built-in defaults, user configuration, and/or `assets/trackers.txt`) without coupling tracker availability to LAN discovery.
-- [ ] Validate supported schemes explicitly (`zero://`, `udp://`, `http://`, and `https://` where implemented); reject unknown schemes with a useful error instead of treating them as HTTP.
+- [x] Validate supported schemes explicitly (`zero://`, `udp://`, and `http://`); reject unsupported `https://` and unknown schemes instead of treating them as HTTP.
 - [ ] Keep the bootstrap list empty until candidate endpoints have been checked for current operation, protocol compatibility, and maintainership. Do not copy historical IPs or onion addresses from old ZeroNet configurations as presumed-live defaults.
-- [ ] Define timeout, retry, backoff, and per-tracker failure isolation so one unavailable tracker does not block other discovery paths.
+- [x] Add bounded TCP connect/read/write timeouts and isolate tracker failures with the existing `join_all` discovery flow. Retry/backoff remain future work.
 - [ ] Add tests for empty configuration, comments/blank lines, duplicate entries, malformed addresses, unsupported schemes, and mixed tracker protocols.
 - [ ] Document how operators can supply and update tracker endpoints without recompiling the client.
 

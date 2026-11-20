@@ -17,8 +17,6 @@ use crate::{
     net::Protocol,
 };
 
-use self::tracker::IpPort;
-
 #[async_trait::async_trait]
 impl Discovery for Site {
     // TODO: Make this return a stream of peers instead of collecting all at once.
@@ -27,11 +25,21 @@ impl Discovery for Site {
         let mut res_all = vec![];
         let mut futures = vec![];
 
+        // BitTorrent trackers use SHA-1; native ZeroNet trackers use the
+        // site's 32-byte SHA-256 address hash. Keep both values separate.
+        let info_hash = get_info_hash(self.address().to_string());
+        let site_hash = self.addr().get_address_hash();
+
         for tracker_addr in ENV.trackers.clone() {
             match make_addr(&tracker_addr) {
                 Ok(tracker_addr) => {
-                    let info_hash = get_info_hash(self.address().to_string());
-                    futures.push(announce(tracker_addr, info_hash, 0, &ENV.peer_id));
+                    futures.push(announce(
+                        tracker_addr,
+                        info_hash,
+                        site_hash.clone(),
+                        ENV.fileserver_port,
+                        &ENV.peer_id,
+                    ));
                 }
                 Err(err) => {
                     error!("Error parsing tracker address: {err}");
@@ -45,8 +53,8 @@ impl Discovery for Site {
                 Ok(peers) => {
                     let mut discovered: Vec<Peer> = peers
                         .into_iter()
-                        .filter(|peer| peer.port > 1)
-                        .map(|peer: IpPort| Peer::new(PeerAddr::parse(peer.to_string()).unwrap()))
+                        .filter(|peer: &PeerAddr| peer.get_port() > 1)
+                        .map(Peer::new)
                         .collect();
                     res_all.append(&mut discovered);
                 }
