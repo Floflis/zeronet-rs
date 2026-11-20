@@ -1,5 +1,6 @@
 pub mod request;
 pub mod response;
+pub mod mesh;
 
 use zeronet_protocol::ZeroConnection;
 
