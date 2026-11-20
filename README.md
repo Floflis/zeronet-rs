@@ -127,3 +127,15 @@ resolve the onion address. The default proxy is `127.0.0.1:9050`; set
 a different local listener. Tor must already be running. This does not yet
 create local onion services or answer RSA onion-signing challenges.
 
+## Peer TCP listener
+
+The normal daemon startup path starts the native peer TCP listener using
+`--fileserver_ip` and `--fileserver_port`. The default `--fileserver_ip=*`
+means `0.0.0.0`, binding all IPv4 interfaces. To keep peer serving local-only,
+set `--fileserver_ip=127.0.0.1`.
+
+A successful local bind does **not** prove that the port is reachable from the
+public internet. Until external reachability and supported service types can
+be verified, peer handshakes continue to report `port_opened=false` and
+ZeroNet tracker announces keep `add=[]`. Router/NAT/firewall checks and
+service-type advertisement remain separate work.

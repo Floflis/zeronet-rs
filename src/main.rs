@@ -249,10 +249,36 @@ async fn main() -> Result<(), Error> {
         controller
             .extend_sites_from_sitedata(site_storage.clone())
             .await;
-        let mut con = ConnectionController::new(controller).await?;
+        let con = ConnectionController::new(controller).await?;
         let _ = con.run().await;
     } else {
         info!("Loaded : {} Plugins.", plugins.len());
+
+        // Build the peer-serving site registry independently from the UI actor.
+        // The current controller API owns its SitesController, so this is a
+        // separate serving view of the same persisted site metadata.
+        let mut peer_sites_controller = SitesController::new(DbManager::new());
+        peer_sites_controller
+            .extend_sites_from_sitedata(site_storage.clone())
+            .await;
+
+        match ConnectionController::new(peer_sites_controller).await {
+            Ok(peer_listener) => {
+                info!(
+                    "Peer TCP listener started on {}:{}",
+                    ENV.fileserver_ip, ENV.fileserver_port
+                );
+                tokio::spawn(async move {
+                    if let Err(error) = peer_listener.run().await {
+                        error!("Peer TCP listener stopped: {error}");
+                    }
+                });
+            }
+            Err(error) => {
+                warn!("Peer TCP listener could not start: {error}");
+            }
+        }
+
         let user_controller = users::run().unwrap();
         let sites_controller = sites::run().await.unwrap();
         use plugins::site_server::server;

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, io::Read, time::Duration};
+use std::{collections::HashMap, fs::File, io::Read, sync::Arc, time::Duration};
 
 use itertools::Itertools;
 use log::*;
@@ -6,7 +6,7 @@ use serde_bytes::ByteBuf;
 use std::time::Instant;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::Mutex,
 };
 
 use decentnet_protocol::{
@@ -27,7 +27,7 @@ use crate::{
 };
 
 pub struct ConnectionController {
-    listener: TcpListener,
+    listener: Arc<TcpListener>,
     sites_controller: SitesController,
     conn_len: usize,
     connections: HashMap<String, usize>,
@@ -37,7 +37,7 @@ impl ConnectionController {
     pub async fn new(sites_controller: SitesController) -> Result<Self, Error> {
         let ser_addr = format!("{}:{}", ENV.fileserver_ip, ENV.fileserver_port);
         info!("Listening on {ser_addr}");
-        let listener = TcpListener::bind(ser_addr).await?;
+        let listener = Arc::new(TcpListener::bind(ser_addr).await?);
         Ok(Self {
             listener,
             sites_controller,
@@ -46,46 +46,60 @@ impl ConnectionController {
         })
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
+    /// Accept peer sessions continuously and dispatch each socket independently.
+    ///
+    /// Request handling is serialized only while mutating the shared site
+    /// registry. A slow or long-lived peer therefore cannot block new accepts.
+    pub async fn run(self) -> Result<(), Error> {
+        let listener = Arc::clone(&self.listener);
+        let controller = Arc::new(Mutex::new(self));
+
         loop {
-            let incoming = self.listener.accept().await;
-            if let Ok(stream) = incoming {
-                self.conn_len += 1;
-                if let Ok(peer_addr) = stream.0.peer_addr() {
-                    let peer_addr = peer_addr.ip().to_string();
-                    if self.connections.contains_key(&peer_addr) {
-                        self.connections
-                            .insert(peer_addr.clone(), self.connections[&peer_addr] + 1);
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                    } else {
-                        self.connections.insert(peer_addr, 1);
+            match listener.accept().await {
+                Ok((stream, peer_addr)) => {
+                    let peer_ip = peer_addr.ip().to_string();
+                    {
+                        let mut state = controller.lock().await;
+                        state.conn_len += 1;
+                        *state.connections.entry(peer_ip.clone()).or_insert(0) += 1;
                     }
-                    let (req_tx, mut req_rx) = channel(64);
-                    let (res_tx, mut res_rx) = channel(64);
+
+                    let controller = Arc::clone(&controller);
                     tokio::spawn(async move {
-                        let _ = Self::handle_connection(stream.0, req_tx, &mut res_rx).await;
-                    });
-                    loop {
-                        let msg = req_rx.recv().await;
-                        if let Some(req) = msg {
-                            let res = self.handle_request(req).await;
-                            let _ = res_tx.send(res).await;
-                        } else {
-                            info!("Connection closed");
-                            break;
+                        if let Err(error) =
+                            Self::handle_connection(stream, Arc::clone(&controller)).await
+                        {
+                            debug!("Peer connection from {peer_addr} closed: {error}");
                         }
-                    }
-                } else {
-                    error!("Error : {}", stream.0.peer_addr().unwrap_err());
+
+                        // Keep the counters accurate even when a peer disconnects
+                        // while a request is being processed.
+                        let mut state = controller.lock().await;
+                        state.conn_len = state.conn_len.saturating_sub(1);
+                        let remove_peer = if let Some(count) = state.connections.get_mut(&peer_ip) {
+                            *count = count.saturating_sub(1);
+                            *count == 0
+                        } else {
+                            false
+                        };
+                        if remove_peer {
+                            state.connections.remove(&peer_ip);
+                        }
+                    });
                 }
-            };
+                Err(error) => {
+                    // A transient accept error must not silently kill the
+                    // long-running peer service.
+                    warn!("Peer TCP accept failed; retrying: {error}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
         }
     }
 
     async fn handle_connection(
         stream: TcpStream,
-        req_tx: Sender<ZeroNetRequest>,
-        res_rx: &mut Receiver<ResponseType>,
+        controller: Arc<Mutex<Self>>,
     ) -> Result<(), Error> {
         let peer_addr = stream.peer_addr()?;
         let stream = stream.into_std()?;
@@ -94,83 +108,78 @@ impl ConnectionController {
         let mut connection = ZeroConnection::new(reader, writer)?;
 
         loop {
-            let request = connection.recv().await;
-            if let Ok(request) = request {
-                let mut protocol = Protocol::new(&mut connection);
-                match request.cmd.as_str() {
-                    "handshake" => {
-                        let res = protocol.handshake(request.req_id).await;
-                        if res.is_err() {
-                            error!(
-                                "Error Sending Response: \nTo : {} : {:#?}",
-                                peer_addr,
-                                res.unwrap_err()
-                            );
-                        }
-                    }
-                    "ping" => {
-                        let res = protocol.ping(request.req_id).await;
-                        if res.is_err() {
-                            error!(
-                                "Error Sending Response: \nTo : {} : {:#?}",
-                                peer_addr,
-                                res.unwrap_err()
-                            );
-                        }
-                    }
-                    _cmd => {
-                        debug!(
-                            "\nFrom : {} : {} : {}",
-                            peer_addr,
-                            serde_json::to_string_pretty(&request.cmd).unwrap(),
-                            serde_json::to_value(request.req_id).unwrap()
-                        );
-                        let time = Instant::now();
+            let request = match connection.recv().await {
+                Ok(request) => request,
+                Err(error) => {
+                    debug!("Could not receive request from {peer_addr}: {error}");
+                    break;
+                }
+            };
 
-                        //Optimisation For Unknown Sites, send direct Error Response instead for channel roundtrip
-                        #[derive(serde::Serialize, serde::Deserialize)]
-                        struct SiteRequest {
-                            site: String,
-                        }
-
-                        if request.body::<SiteRequest>().is_err() {
-                            let res = Self::unknown_site_response();
-                            let site: &str = &request
-                                .body::<SiteRequest>()
-                                .unwrap_or(SiteRequest {
-                                    site: "".to_string(),
-                                })
-                                .site;
-                            debug!("Unknown site: {site}");
-                            let _ = protocol.0.respond(request.req_id, res).await;
-                            let took = time.elapsed();
-                            debug!("{} Req {} took : {:?}", &request.cmd, &request.req_id, took);
-                            continue;
-                        }
-                        let res = req_tx.send(request.clone()).await;
-                        if res.is_err() {
-                            error!("Channel closed");
-                        }
-                        let res = res_rx.recv().await;
-                        let took = time.elapsed();
-                        debug!("{} Req {} took : {:?}", &request.cmd, &request.req_id, took);
-                        if let Some(res) = res {
-                            let result = protocol.0.respond(request.req_id, res.clone()).await;
-                            if result.is_err() {
-                                error!(
-                                    "Error Sending Response: \nTo : {} : {:#?}",
-                                    peer_addr,
-                                    result.unwrap_err()
-                                );
-                            } else {
-                                debug!("Sent Response {}", serde_json::to_string(&res).unwrap());
-                            }
-                        }
+            let mut protocol = Protocol::new(&mut connection);
+            match request.cmd.as_str() {
+                "handshake" => {
+                    if let Err(error) = protocol.handshake(request.req_id).await {
+                        warn!("Could not send handshake response to {peer_addr}: {error}");
+                        break;
                     }
                 }
-            } else {
-                error!("."); //("{}", request.unwrap_err());
-                break;
+                "ping" => {
+                    if let Err(error) = protocol.ping(request.req_id).await {
+                        warn!("Could not send ping response to {peer_addr}: {error}");
+                        break;
+                    }
+                }
+                _cmd => {
+                    debug!(
+                        "From {peer_addr}: command={} request_id={}",
+                        request.cmd, request.req_id
+                    );
+                    let time = Instant::now();
+
+                    // Unknown sites can be rejected without entering the shared
+                    // site-request path.
+                    #[derive(serde::Serialize, serde::Deserialize)]
+                    struct SiteRequest {
+                        site: String,
+                    }
+
+                    if request.body::<SiteRequest>().is_err() {
+                        let res = Self::unknown_site_response();
+                        let site = request
+                            .body::<SiteRequest>()
+                            .map(|body| body.site)
+                            .unwrap_or_default();
+                        debug!("Unknown or malformed site request: {site}");
+                        let _ = protocol.0.respond(request.req_id, res).await;
+                        debug!(
+                            "{} request {} took {:?}",
+                            request.cmd,
+                            request.req_id,
+                            time.elapsed()
+                        );
+                        continue;
+                    }
+
+                    // Only one request mutates the site registry at a time;
+                    // socket reads/writes and handshake traffic stay concurrent.
+                    let response = {
+                        let mut state = controller.lock().await;
+                        state.handle_request(request.clone()).await
+                    };
+                    debug!(
+                        "{} request {} took {:?}",
+                        request.cmd,
+                        request.req_id,
+                        time.elapsed()
+                    );
+
+                    if let Err(error) = protocol.0.respond(request.req_id, response.clone()).await {
+                        warn!("Could not respond to {peer_addr}: {error}");
+                        break;
+                    }
+                    debug!("Sent response {}", serde_json::to_string(&response).unwrap());
+                }
             }
         }
 

@@ -232,7 +232,7 @@ fn get_matches() -> ArgMatches {
             Arg::new("FILESERVER_IP")
                 .long("fileserver_ip")
                 .default_value("*")
-                .help("Fileserver bind address"),
+                .help("Fileserver bind address (* means all IPv4 interfaces)"),
             Arg::new("FILESERVER_PORT")
                 .long("fileserver_port")
                 .default_value("10000-40000")
@@ -271,6 +271,15 @@ fn get_matches() -> ArgMatches {
         .get_matches()
 }
 
+/// Translate the historical wildcard option into an actual all-interface bind.
+fn normalize_fileserver_ip(ip: &str) -> String {
+    if ip == "*" {
+        "0.0.0.0".to_owned()
+    } else {
+        ip.to_owned()
+    }
+}
+
 pub fn get_env(matches: &ArgMatches) -> Result<Environment, Error> {
     let data_path_str = matches.get_one::<String>("DATA_DIR").unwrap();
     let data_path = PathBuf::from_str(data_path_str).unwrap();
@@ -288,15 +297,10 @@ pub fn get_env(matches: &ArgMatches) -> Result<Environment, Error> {
         fs::create_dir_all(log_path_str).unwrap();
         PathBuf::from_str(log_path_str).unwrap()
     };
-    let fileserver_ip = if let Some(ip) = matches.get_one::<String>("FILESERVER_IP") {
-        if ip == "*" {
-            "127.0.0.1".into()
-        } else {
-            ip.into()
-        }
-    } else {
-        unreachable!()
-    };
+    let fileserver_ip = matches
+        .get_one::<String>("FILESERVER_IP")
+        .map(|ip| normalize_fileserver_ip(ip))
+        .unwrap_or_else(|| unreachable!());
     let fileserver_port = if let Some(port) = matches.get_one::<String>("FILESERVER_PORT") {
         if port.contains("10000-40000") {
             let mut rng = rand::thread_rng();
@@ -388,4 +392,21 @@ pub fn client_info() -> serde_json::Value {
             "Placeholder Data",
         ],
     })
+}
+
+
+#[cfg(test)]
+mod fileserver_bind_tests {
+    use super::normalize_fileserver_ip;
+
+    #[test]
+    fn wildcard_binds_all_ipv4_interfaces() {
+        assert_eq!(normalize_fileserver_ip("*"), "0.0.0.0");
+    }
+
+    #[test]
+    fn explicit_fileserver_bind_address_is_preserved() {
+        assert_eq!(normalize_fileserver_ip("127.0.0.1"), "127.0.0.1");
+        assert_eq!(normalize_fileserver_ip("192.0.2.10"), "192.0.2.10");
+    }
 }
