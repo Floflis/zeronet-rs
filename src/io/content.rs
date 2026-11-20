@@ -266,11 +266,13 @@ impl Site {
             rules.insert("signers".to_string(), json!(Vec::<String>::new()));
         }
 
-        if !banned && let Some(signers) = rules.get_mut("signers") {
-            signers
-                .as_array_mut()
-                .unwrap()
-                .push(json!(user_address.clone())); // Add user as valid signer
+        if !banned {
+            if let Some(signers) = rules.get_mut("signers") {
+                signers
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!(user_address.clone())); // Add user as valid signer
+            }
         }
         rules.insert("user_address".to_string(), json!(user_address));
         rules.insert("includes_allowed".to_string(), json!(false));

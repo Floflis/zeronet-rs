@@ -294,8 +294,10 @@ impl LocalDiscovery {
                     }
                 };
 
-                if changed && let Err(error) = self.request_site_list(&peer).await {
-                    debug!("Could not request LAN site list: {error}");
+                if changed {
+                    if let Err(error) = self.request_site_list(&peer).await {
+                        debug!("Could not request LAN site list: {error}");
+                    }
                 }
             }
             "siteListRequest" => {
