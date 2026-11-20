@@ -14,7 +14,7 @@ macro_rules! impl_plugin {
                 .filter(|p| p.permissions.contains(&$permissions));
             let mut plugins_loaded = Vec::new();
             for plugin in plugins {
-                let engine = wit_bindgen_wasmer::wasmer::Cranelift::default();
+                let engine = wit_bindgen_wasmer::wasmer::sys::Cranelift::default();
                 let mut store = wit_bindgen_wasmer::wasmer::Store::new(engine);
                 let bytes = std::fs::read(&plugin.path).unwrap();
                 let module = wit_bindgen_wasmer::wasmer::Module::new(&store, &bytes);
