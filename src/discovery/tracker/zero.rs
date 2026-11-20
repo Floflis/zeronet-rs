@@ -479,9 +479,7 @@ mod tests {
             assert_eq!(u16::from_be_bytes(target_port), 15441);
 
             let mut remote = TcpStream::connect(tracker_address).unwrap();
-            client
-                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
-                .unwrap();
+            client.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
 
             let mut client_reader = client.try_clone().unwrap();
             let mut remote_writer = remote.try_clone().unwrap();
