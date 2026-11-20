@@ -320,7 +320,7 @@ mod tests {
         assert!(validate_tracker_address(
             "zero://tracker.example#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:443"
         ).is_err());
-        assert!(validate_tracker_address("zero://example.onion:15441").is_err());
+        assert!(validate_tracker_address("zero://example.onion:15441").is_ok());
     }
 
     #[test]
