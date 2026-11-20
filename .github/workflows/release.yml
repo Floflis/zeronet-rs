@@ -1,0 +1,82 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          changelog: CHANGELOG.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.9.1
+        with:
+          access_token: ${{ github.token }}
+      
+      - name: Checkingout Repo
+        uses: actions/checkout@v3
+      
+      - name: Setting Nightly Rust Toolchain
+        uses: actions-rs/toolchain@v1.0.7
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+      
+      - name: Building Linux Binaries and Uploading to Releases
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: zeronet
+          include: CHANGELOG.md,LICENSE.md,README.md,assets
+          archive: ZeroNetX-linux-x64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Building Mac OS Binaries and Uploading to Releases
+        if: matrix.os == 'macos-latest'
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: zeronet
+          include: CHANGELOG.md,LICENSE.md,README.md,assets
+          archive: ZeroNetX-mac-x64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Building Windows Binaries and Uploading to Releases
+        if: matrix.os == 'windows-latest'
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: zeronet
+          include: CHANGELOG.md,LICENSE.md,README.md,assets
+          archive: ZeroNetX-windows-x64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Saving Artifact to Cache
+        uses: Swatinem/rust-cache@v1.3.0
+        with:
+          key: ${{ matrix.os }}
