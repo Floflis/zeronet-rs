@@ -1,6 +1,7 @@
 #![feature(trait_alias)]
 #![feature(let_chains)]
 
+pub mod bridge;
 pub mod common;
 pub mod controllers;
 #[allow(unused)]
@@ -27,6 +28,12 @@ use crate::{
 
 #[actix_web::main]
 async fn main() -> Result<(), Error> {
+    // The bridge owns its stdout stream. Enter it before normal startup so
+    // logs, the web server, and the default LAN service cannot corrupt JSONL.
+    if matches!((*MATCHES).subcommand(), Some(("bridge", _))) {
+        return bridge::run().await;
+    }
+
     let plugins = &*PLUGINS;
     let user_storage = &*USER_STORAGE;
     let site_storage = &*SITE_STORAGE;

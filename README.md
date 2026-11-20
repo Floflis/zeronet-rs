@@ -17,6 +17,7 @@ Currently This Repo is open to Code Reviews/Security Audit/Best Code Practice Su
  - dbRebuild => Build db from data files using dbschema.json
  - dbQuery => Sql Query on built db to fetch data
  - getConfig => Client Config data
+ - bridge => Persistent versioned JSONL IPC for Python clients
  
 ## Available Commands:
  - siteCreate
@@ -31,8 +32,13 @@ Currently This Repo is open to Code Reviews/Security Audit/Best Code Practice Su
  - dbRebuild
  - dbQuery
  - getConfig
+ - bridge
 
 pass -s "Your Site Address" for above commands
+
+## Python bridge
+
+Run `zeronet bridge` as a long-lived child process and use newline-delimited JSON over stdin/stdout. See [docs/PYTHON-BRIDGE.md](docs/PYTHON-BRIDGE.md) for the versioned protocol, supported methods, and Python example.
 
 ## Download :
 Latest Packages Available on [Github Releases](https://github.com/canewsin/zeronet-rs/releases/latest).
