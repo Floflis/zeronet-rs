@@ -68,7 +68,10 @@ pub enum Addr {
     Http(SocketAddr),
     Zero(SocketAddr),
     /// Native ZeroNet tracker reached through the local Tor SOCKS5 proxy.
-    ZeroOnion { host: String, port: u16 },
+    ZeroOnion {
+        host: String,
+        port: u16,
+    },
 }
 
 /// Validate a tracker URL without resolving DNS. This keeps configuration
@@ -98,8 +101,8 @@ pub fn validate_tracker_address(tracker: &str) -> Result<(), String> {
 
     // Onion addresses are valid only for the native ZeroNet transport. They
     // must be passed to Tor as hostnames, never resolved by the system DNS.
-    let is_onion = authority_host(authority)
-        .is_some_and(|host| host.to_ascii_lowercase().ends_with(".onion"));
+    let is_onion =
+        authority_host(authority).is_some_and(|host| host.to_ascii_lowercase().ends_with(".onion"));
     if is_onion && scheme != "zero" {
         return Err("onion tracker addresses require the native zero:// transport".to_string());
     }
