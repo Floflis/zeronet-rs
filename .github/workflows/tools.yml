@@ -62,10 +62,8 @@ jobs:
 
     - uses: Swatinem/rust-cache@v1.3.0
 
-    - uses: actions-rs/clippy-check@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        args: --all-features
+    - name: Check Clippy
+      run: cargo clippy --workspace --all-features -- -D warnings
 
   rustfmt:
     runs-on: ubuntu-latest
