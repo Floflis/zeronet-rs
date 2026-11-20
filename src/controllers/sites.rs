@@ -82,10 +82,10 @@ impl SitesController {
             site = Site::new(&address_str, ENV.data_path.join(address_str.clone())).unwrap();
             &mut site
         };
-        if let Some(addr) = self.sites_addr.get(address)
-            && site.content_path().is_file()
-        {
-            return Ok((address.clone(), addr.clone()));
+        if let Some(addr) = self.sites_addr.get(address) {
+            if site.content_path().is_file() {
+                return Ok((address.clone(), addr.clone()));
+            }
         }
         trace!(
             "Spinning up actor for site zero://{}",
@@ -118,10 +118,10 @@ impl SitesController {
     }
 
     pub fn get_by_key(&mut self, key: String) -> Result<(Address, Addr<Site>), Error> {
-        if let Some(address) = self.nonce.get(&key)
-            && let Some(addr) = self.sites_addr.get(address)
-        {
-            return Ok((address.clone(), addr.clone()));
+        if let Some(address) = self.nonce.get(&key) {
+            if let Some(addr) = self.sites_addr.get(address) {
+                return Ok((address.clone(), addr.clone()));
+            }
         }
         error!("No site found for key {key}");
         Err(Error::MissingError)
