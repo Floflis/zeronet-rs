@@ -25,11 +25,13 @@ pub fn handshake<'a>() -> (&'a str, Handshake) {
             protocol: "v2".into(),
             use_bin_type: true,
             time: current_unix_epoch(),
-            fileserver_port: 26117,
+            fileserver_port: ENV.fileserver_port as usize,
             crypt: None,
             crypt_supported: vec![],
             onion: None,
-            port_opened: Some(true),
+            // The normal startup path does not start ConnectionController.
+            // Never advertise an unverified peer listener as reachable.
+            port_opened: Some(false),
             target_address: None,
         },
     )
