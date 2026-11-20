@@ -319,6 +319,7 @@ impl Handler<SitePauseRequest> for SitesController {
     fn handle(&mut self, msg: SitePauseRequest, _ctx: &mut Context<Self>) -> Self::Result {
         if let Some(site) = self.sites.get_mut(&msg.address) {
             site.storage.settings.serving = false;
+            self.update_sites_changed();
             Ok(())
         } else {
             Err(Error::SiteNotFound)
@@ -337,7 +338,8 @@ impl Handler<SiteResumeRequest> for SitesController {
 
     fn handle(&mut self, msg: SiteResumeRequest, _ctx: &mut Context<Self>) -> Self::Result {
         if let Some(site) = self.sites.get_mut(&msg.address) {
-            site.storage.settings.serving = false;
+            site.storage.settings.serving = true;
+            self.update_sites_changed();
             Ok(())
         } else {
             Err(Error::SiteNotFound)
@@ -356,6 +358,7 @@ impl Handler<SiteDeleteRequest> for SitesController {
 
     fn handle(&mut self, msg: SiteDeleteRequest, _ctx: &mut Context<Self>) -> Self::Result {
         if self.sites.remove(&msg.address).is_some() {
+            self.update_sites_changed();
             Ok(())
         } else {
             Err(Error::SiteNotFound)

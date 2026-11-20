@@ -45,6 +45,10 @@ struct AnnounceRequest {
     need_types: Vec<String>,
     need_num: usize,
     add: Vec<String>,
+    /// Reconcile this peer's complete tracker state. Omitted on ordinary
+    /// single-site discovery announces for backwards compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delete: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -100,10 +104,11 @@ fn read_ack<R: Read>(reader: &mut R, expected_to: usize) -> io::Result<()> {
     Ok(())
 }
 
-fn parse_announce_response(
+fn parse_announce_response_groups(
     response: AnnounceReply,
     expected_to: usize,
-) -> io::Result<Vec<PeerAddr>> {
+    expected_groups: usize,
+) -> io::Result<Vec<Vec<PeerAddr>>> {
     if response.cmd != "response" || response.to != expected_to {
         return Err(invalid_data(format!(
             "unexpected ZeroNet announce response: cmd={}, to={}",
@@ -128,12 +133,28 @@ fn parse_announce_response(
         .peers
         .ok_or_else(|| invalid_data("ZeroNet tracker response is missing peers"))?;
 
-    let mut peers = Vec::new();
-    let mut seen = HashSet::new();
+    // Compatible trackers differ on the all-empty shape: some return
+    // peers=[], others return one empty map per requested hash. A partially
+    // populated group list is ambiguous and must not be zipped to site hashes.
+    if peer_groups.is_empty() {
+        return Ok((0..expected_groups).map(|_| Vec::new()).collect());
+    }
 
+    if peer_groups.len() != expected_groups {
+        return Err(invalid_data(format!(
+            "ZeroNet tracker returned {} peer groups for {} requested site hashes",
+            peer_groups.len(),
+            expected_groups
+        )));
+    }
+
+    let mut grouped_peers = Vec::with_capacity(peer_groups.len());
     for group in peer_groups {
+        let mut peers = Vec::new();
+        let mut seen = HashSet::new();
+
         // ip4 is the legacy ZeroNet spelling. ipv4 and ipv6 are also emitted
-        // by trackers. onion records are decoded when the Tor feature is on.
+        // by trackers. Onion records are decoded when the Tor feature is on.
         for packed in group
             .ip4
             .iter()
@@ -143,13 +164,24 @@ fn parse_announce_response(
         {
             let peer = PeerAddr::unpack(packed.as_ref())
                 .map_err(|error| invalid_data(format!("invalid packed tracker peer: {error}")))?;
+            // The same peer may serve several sites, so deduplicate only
+            // inside the current site group.
             if seen.insert(peer.clone()) {
                 peers.push(peer);
             }
         }
+        grouped_peers.push(peers);
     }
 
-    Ok(peers)
+    Ok(grouped_peers)
+}
+
+fn parse_announce_response(
+    response: AnnounceReply,
+    expected_to: usize,
+) -> io::Result<Vec<PeerAddr>> {
+    let mut groups = parse_announce_response_groups(response, expected_to, 1)?;
+    Ok(groups.pop().unwrap_or_default())
 }
 
 fn validate_site_hash(site_hash: &[u8]) -> io::Result<()> {
@@ -165,48 +197,75 @@ fn validate_site_hash(site_hash: &[u8]) -> io::Result<()> {
 /// Shared ZeroNet handshake/announce exchange for direct and Tor streams.
 fn announce_stream<S: Read + Write>(
     stream: &mut S,
-    site_hash: Vec<u8>,
+    site_hashes: Vec<Vec<u8>>,
     port: u16,
-) -> io::Result<Vec<PeerAddr>> {
-    validate_site_hash(&site_hash)?;
+    add_types: Vec<String>,
+    delete: Option<bool>,
+    handshake_port_opened: Option<bool>,
+) -> io::Result<Vec<Vec<PeerAddr>>> {
+    for site_hash in &site_hashes {
+        validate_site_hash(site_hash)?;
+    }
 
     // Reuse the project's canonical ZeroNet handshake builder and serializer.
     let mut handshake = crate::net::handshake().1;
     handshake.fileserver_port = port as usize;
+    handshake.port_opened = handshake_port_opened;
     send_request(stream, "handshake", 0, handshake)?;
     read_ack(stream, 0)?;
 
     let announce = AnnounceRequest {
-        hashes: vec![ByteBuf::from(site_hash)],
+        hashes: site_hashes.into_iter().map(ByteBuf::from).collect(),
         onions: Vec::new(),
         port: port as usize,
         // ip4 preserves compatibility with older AnnounceZero trackers.
-        // The response parser accepts IPv4, IPv6 and onion encodings.
         need_types: vec!["ip4".into(), "ipv4".into(), "ipv6".into()],
-        // Real service types remain empty until the peer listener is active
-        // and externally reachable service types can be established.
-        add: Vec::new(),
+        add: add_types,
         need_num: 20,
+        delete,
     };
+    let expected_groups = announce.hashes.len();
 
     send_request(stream, "announce", 1, announce)?;
     let response: AnnounceReply = rmp_serde::from_read(stream).map_err(invalid_data)?;
-    parse_announce_response(response, 1)
+    parse_announce_response_groups(response, 1, expected_groups)
 }
 
 fn announce_blocking(
     address: SocketAddr,
-    site_hash: Vec<u8>,
+    site_hashes: Vec<Vec<u8>>,
     port: u16,
-) -> io::Result<Vec<PeerAddr>> {
-    validate_site_hash(&site_hash)?;
+    add_types: Vec<String>,
+    delete: Option<bool>,
+) -> io::Result<Vec<Vec<PeerAddr>>> {
+    for site_hash in &site_hashes {
+        validate_site_hash(site_hash)?;
+    }
+
+    let tracker_family_type = match address.ip() {
+        std::net::IpAddr::V4(_) => "ipv4",
+        std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some() => "ipv4",
+        std::net::IpAddr::V6(_) => "ipv6",
+    };
+    let port_opened = Some(
+        add_types
+            .iter()
+            .any(|service| service == tracker_family_type),
+    );
 
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     stream.set_nodelay(true)?;
 
-    announce_stream(&mut stream, site_hash, port)
+    announce_stream(
+        &mut stream,
+        site_hashes,
+        port,
+        add_types,
+        delete,
+        port_opened,
+    )
 }
 
 fn connect_tor_tracker(target: &str) -> io::Result<TorStream> {
@@ -232,10 +291,14 @@ fn connect_tor_tracker(target: &str) -> io::Result<TorStream> {
 fn announce_onion_blocking(
     host: String,
     tracker_port: u16,
-    site_hash: Vec<u8>,
+    site_hashes: Vec<Vec<u8>>,
     client_port: u16,
-) -> io::Result<Vec<PeerAddr>> {
-    validate_site_hash(&site_hash)?;
+    add_types: Vec<String>,
+    delete: Option<bool>,
+) -> io::Result<Vec<Vec<PeerAddr>>> {
+    for site_hash in &site_hashes {
+        validate_site_hash(site_hash)?;
+    }
 
     // Keep the .onion hostname intact. The SOCKS5 proxy must resolve it;
     // resolving it locally would leak the lookup and fail for onion services.
@@ -245,7 +308,53 @@ fn announce_onion_blocking(
     stream.get_ref().set_write_timeout(Some(IO_TIMEOUT))?;
     stream.get_ref().set_nodelay(true)?;
 
-    announce_stream(&mut stream, site_hash, client_port)
+    // A Tor tracker route does not establish which public IP family is
+    // reachable. Do not derive port_opened from the tracker transport.
+    announce_stream(
+        &mut stream,
+        site_hashes,
+        client_port,
+        add_types,
+        delete,
+        None,
+    )
+}
+
+/// Announce a complete set of site hashes through a native clearnet tracker.
+/// delete=true is safe here because the hashes are a complete serving snapshot.
+pub async fn zero_announce_many(
+    address: SocketAddr,
+    site_hashes: Vec<Vec<u8>>,
+    port: u16,
+    add_types: Vec<String>,
+) -> io::Result<Vec<Vec<PeerAddr>>> {
+    tokio::task::spawn_blocking(move || {
+        announce_blocking(address, site_hashes, port, add_types, Some(true))
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("tracker worker failed: {error}")))?
+}
+
+/// Onion counterpart of the complete native ZeroNet tracker announce.
+pub async fn zero_announce_many_onion(
+    host: String,
+    tracker_port: u16,
+    site_hashes: Vec<Vec<u8>>,
+    client_port: u16,
+    add_types: Vec<String>,
+) -> io::Result<Vec<Vec<PeerAddr>>> {
+    tokio::task::spawn_blocking(move || {
+        announce_onion_blocking(
+            host,
+            tracker_port,
+            site_hashes,
+            client_port,
+            add_types,
+            Some(true),
+        )
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("Tor tracker worker failed: {error}")))?
 }
 
 /// Announce one site's SHA-256 hash to a native ZeroNet tracker over Tor.
@@ -255,11 +364,19 @@ pub async fn zero_announce_onion(
     site_hash: Vec<u8>,
     client_port: u16,
 ) -> io::Result<Vec<PeerAddr>> {
-    tokio::task::spawn_blocking(move || {
-        announce_onion_blocking(host, tracker_port, site_hash, client_port)
+    let mut groups = tokio::task::spawn_blocking(move || {
+        announce_onion_blocking(
+            host,
+            tracker_port,
+            vec![site_hash],
+            client_port,
+            Vec::new(),
+            None,
+        )
     })
     .await
-    .map_err(|error| io::Error::other(format!("Tor tracker worker failed: {error}")))?
+    .map_err(|error| io::Error::other(format!("Tor tracker worker failed: {error}")))??;
+    Ok(groups.pop().unwrap_or_default())
 }
 
 /// Announce one site's SHA-256 address hash to a native zero:// tracker.
@@ -268,9 +385,12 @@ pub async fn zero_announce(
     site_hash: Vec<u8>,
     port: u16,
 ) -> io::Result<Vec<PeerAddr>> {
-    tokio::task::spawn_blocking(move || announce_blocking(address, site_hash, port))
-        .await
-        .map_err(|error| io::Error::other(format!("tracker worker failed: {error}")))?
+    let mut groups = tokio::task::spawn_blocking(move || {
+        announce_blocking(address, vec![site_hash], port, Vec::new(), None)
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("tracker worker failed: {error}")))??;
+    Ok(groups.pop().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -366,19 +486,26 @@ mod tests {
 
     #[test]
     fn rejects_invalid_site_hash_length() {
-        let result = announce_blocking("127.0.0.1:1".parse().unwrap(), vec![0; 20], 15441);
+        let result = announce_blocking(
+            "127.0.0.1:1".parse().unwrap(),
+            vec![vec![0; 20]],
+            15441,
+            Vec::new(),
+            None,
+        );
         assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
     }
 
     #[test]
-    fn parses_multiple_site_groups_and_deduplicates_peers() {
+    fn preserves_per_site_groups_and_deduplicates_only_within_each_group() {
         let packed_peer = ByteBuf::from(vec![8, 8, 8, 8, 0x51, 0x3c]);
         let response = AnnounceReply {
             cmd: "response".into(),
             to: 1,
             peers: Some(vec![
                 PeerGroup {
-                    ip4: vec![packed_peer.clone()],
+                    ip4: vec![packed_peer.clone(), packed_peer.clone()],
+                    ipv4: vec![packed_peer.clone()],
                     ..PeerGroup::default()
                 },
                 PeerGroup {
@@ -390,8 +517,38 @@ mod tests {
             onion_sign_this: None,
         };
 
-        let peers = parse_announce_response(response, 1).unwrap();
-        assert_eq!(peers.len(), 1);
+        let groups = parse_announce_response_groups(response, 1, 2).unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 1);
+        assert_eq!(groups[1].len(), 1);
+        assert_eq!(groups[0][0], groups[1][0]);
+    }
+
+    #[test]
+    fn accepts_all_empty_compatibility_response_but_rejects_partial_groups() {
+        let empty = AnnounceReply {
+            cmd: "response".into(),
+            to: 1,
+            peers: Some(Vec::new()),
+            error: None,
+            onion_sign_this: None,
+        };
+        let groups = parse_announce_response_groups(empty, 1, 3).unwrap();
+        assert_eq!(groups, vec![Vec::new(), Vec::new(), Vec::new()]);
+
+        let partial = AnnounceReply {
+            cmd: "response".into(),
+            to: 1,
+            peers: Some(vec![PeerGroup::default()]),
+            error: None,
+            onion_sign_this: None,
+        };
+        assert_eq!(
+            parse_announce_response_groups(partial, 1, 2)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidData
+        );
     }
 
     #[tokio::test]
@@ -517,5 +674,84 @@ mod tests {
 
         let result = zero_announce(address, vec![0x42; 32], 15441).await;
         assert!(result.is_err());
+    }
+    #[tokio::test]
+    async fn full_announce_sends_complete_ordered_hashes_and_delete_flag() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let handshake: IncomingHandshake =
+                rmp_serde::from_read(&mut stream).expect("handshake request");
+            assert_eq!(handshake.cmd, "handshake");
+            assert_eq!(handshake.req_id, 0);
+
+            let ack = serde_json::json!({"cmd": "response", "to": 0});
+            rmp_serde::encode::write_named(&mut stream, &ack).unwrap();
+
+            let announce: IncomingAnnounce =
+                rmp_serde::from_read(&mut stream).expect("announce request");
+            assert_eq!(announce.cmd, "announce");
+            assert_eq!(announce.req_id, 1);
+            assert_eq!(announce.params.hashes.len(), 2);
+            assert_eq!(announce.params.hashes[0].as_ref(), &[0x11; 32]);
+            assert_eq!(announce.params.hashes[1].as_ref(), &[0x22; 32]);
+            assert_eq!(announce.params.delete, Some(true));
+            assert_eq!(announce.params.add, vec!["ipv4"]);
+            assert_eq!(announce.params.need_types, vec!["ip4", "ipv4", "ipv6"]);
+
+            let packed = vec![8, 8, 8, 8, 0x51, 0x3c];
+            let response = serde_json::json!({
+                "cmd": "response",
+                "to": 1,
+                "peers": [
+                    {"ipv4": [packed]},
+                    {}
+                ]
+            });
+            let bytes = rmp_serde::to_vec_named(&response).unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+
+        let groups = zero_announce_many(
+            address,
+            vec![vec![0x11; 32], vec![0x22; 32]],
+            15441,
+            vec!["ipv4".into()],
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 1);
+        assert!(groups[1].is_empty());
+        assert_eq!(groups[0][0].to_string(), "8.8.8.8:15441");
+    }
+
+    #[tokio::test]
+    async fn full_announce_can_delete_previous_peer_when_no_sites_are_served() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let empty_response = fixture(PYTHON_EMPTY_RESPONSE_FIXTURE);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _: IncomingHandshake =
+                rmp_serde::from_read(&mut stream).expect("handshake request");
+            let ack = serde_json::json!({"cmd": "response", "to": 0});
+            rmp_serde::encode::write_named(&mut stream, &ack).unwrap();
+
+            let announce: IncomingAnnounce =
+                rmp_serde::from_read(&mut stream).expect("announce request");
+            assert!(announce.params.hashes.is_empty());
+            assert_eq!(announce.params.delete, Some(true));
+            stream.write_all(&empty_response).unwrap();
+        });
+
+        let groups = zero_announce_many(address, Vec::new(), 15441, Vec::new())
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert!(groups.is_empty());
     }
 }

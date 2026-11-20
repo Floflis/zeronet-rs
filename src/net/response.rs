@@ -10,16 +10,27 @@ use crate::{
     net::{handshake, Protocol},
 };
 
+impl<'a> Protocol<'a> {
+    /// Respond to an inbound handshake with the externally-observed
+    /// reachability state for this listener's address family.
+    pub async fn handshake_with_port_opened(
+        &mut self,
+        id: usize,
+        port_opened: bool,
+    ) -> Result<bool, Error> {
+        let mut body = handshake().1;
+        body.port_opened = Some(port_opened);
+        self.0.respond(id, ResponseType::Handshake(body)).await?;
+        Ok(true)
+    }
+}
+
 #[async_trait::async_trait]
 impl<'a> ResponseImpl for Protocol<'a> {
     type Error = Error;
 
     async fn handshake(&mut self, id: usize) -> Result<bool, Error> {
-        let builder = handshake();
-        self.0
-            .respond(id, ResponseType::Handshake(builder.1))
-            .await?;
-        Ok(true)
+        self.handshake_with_port_opened(id, false).await
     }
 
     async fn ping(&mut self, id: usize) -> Result<bool, Error> {
