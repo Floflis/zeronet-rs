@@ -1,8 +1,9 @@
-use std::{collections::HashMap, fs::File, io::Read, sync::Arc, time::Duration};
+use std::{collections::HashMap, fs::File, io::Read, net::SocketAddr, sync::Arc, time::Duration};
 
 use itertools::Itertools;
 use log::*;
 use serde_bytes::ByteBuf;
+use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
 use std::time::Instant;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -21,13 +22,31 @@ use zerucontent::Content;
 
 use crate::{
     core::{error::Error, io::SiteIO, peer::Peer},
-    environment::ENV,
+    environment::{fileserver_bind_addresses, ENV},
     net::Protocol,
     SitesController,
 };
 
+fn bind_peer_listener(address: SocketAddr) -> std::io::Result<TcpListener> {
+    let domain = if address.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))?;
+    socket.set_reuse_address(true)?;
+
+    // Separate IPv4 and IPv6 sockets make dual-stack behavior predictable
+    // across operating systems.
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+
+    socket.bind(&address.into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    let listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(listener)
+}
+
 pub struct ConnectionController {
-    listener: Arc<TcpListener>,
+    listeners: Vec<Arc<TcpListener>>,
     sites_controller: SitesController,
     conn_len: usize,
     connections: HashMap<String, usize>,
@@ -35,11 +54,38 @@ pub struct ConnectionController {
 
 impl ConnectionController {
     pub async fn new(sites_controller: SitesController) -> Result<Self, Error> {
-        let ser_addr = format!("{}:{}", ENV.fileserver_ip, ENV.fileserver_port);
-        info!("Listening on {ser_addr}");
-        let listener = Arc::new(TcpListener::bind(ser_addr).await?);
+        let bind_addresses = fileserver_bind_addresses(
+            &ENV.fileserver_ip,
+            &ENV.fileserver_ip_type,
+            ENV.fileserver_port,
+        )?;
+        let mut listeners = Vec::new();
+
+        for address in bind_addresses {
+            match bind_peer_listener(address) {
+                Ok(listener) => {
+                    info!("Peer TCP listener bound on {}", listener.local_addr()?);
+                    listeners.push(Arc::new(listener));
+                }
+                Err(error) => {
+                    // Dual-stack is best-effort: retain a working address
+                    // family when the OS has IPv6 disabled or an interface
+                    // is temporarily unavailable.
+                    warn!("Could not bind peer listener on {address}: {error}");
+                }
+            }
+        }
+
+        if listeners.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "could not bind any configured peer listener address",
+            )
+            .into());
+        }
+
         Ok(Self {
-            listener,
+            listeners,
             sites_controller,
             conn_len: 0,
             connections: HashMap::new(),
@@ -51,50 +97,60 @@ impl ConnectionController {
     /// Request handling is serialized only while mutating the shared site
     /// registry. A slow or long-lived peer therefore cannot block new accepts.
     pub async fn run(self) -> Result<(), Error> {
-        let listener = Arc::clone(&self.listener);
+        let listeners = self.listeners.clone();
         let controller = Arc::new(Mutex::new(self));
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, peer_addr)) => {
-                    let peer_ip = peer_addr.ip().to_string();
-                    {
-                        let mut state = controller.lock().await;
-                        state.conn_len += 1;
-                        *state.connections.entry(peer_ip.clone()).or_insert(0) += 1;
+        // Run one accept loop per bound address family. Each connection is
+        // handled independently, so a slow IPv6 peer cannot block IPv4 accepts.
+        for listener in listeners {
+            let controller = Arc::clone(&controller);
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, peer_addr)) => {
+                            let peer_ip = peer_addr.ip().to_string();
+                            {
+                                let mut state = controller.lock().await;
+                                state.conn_len += 1;
+                                *state.connections.entry(peer_ip.clone()).or_insert(0) += 1;
+                            }
+
+                            let controller = Arc::clone(&controller);
+                            tokio::spawn(async move {
+                                if let Err(error) =
+                                    Self::handle_connection(stream, Arc::clone(&controller)).await
+                                {
+                                    debug!("Peer connection from {peer_addr} closed: {error}");
+                                }
+
+                                // Keep counters accurate after every disconnect.
+                                let mut state = controller.lock().await;
+                                state.conn_len = state.conn_len.saturating_sub(1);
+                                let remove_peer =
+                                    if let Some(count) = state.connections.get_mut(&peer_ip) {
+                                        *count = count.saturating_sub(1);
+                                        *count == 0
+                                    } else {
+                                        false
+                                    };
+                                if remove_peer {
+                                    state.connections.remove(&peer_ip);
+                                }
+                            });
+                        }
+                        Err(error) => {
+                            warn!("Peer TCP accept failed; retrying: {error}");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
                     }
-
-                    let controller = Arc::clone(&controller);
-                    tokio::spawn(async move {
-                        if let Err(error) =
-                            Self::handle_connection(stream, Arc::clone(&controller)).await
-                        {
-                            debug!("Peer connection from {peer_addr} closed: {error}");
-                        }
-
-                        // Keep the counters accurate even when a peer disconnects
-                        // while a request is being processed.
-                        let mut state = controller.lock().await;
-                        state.conn_len = state.conn_len.saturating_sub(1);
-                        let remove_peer = if let Some(count) = state.connections.get_mut(&peer_ip) {
-                            *count = count.saturating_sub(1);
-                            *count == 0
-                        } else {
-                            false
-                        };
-                        if remove_peer {
-                            state.connections.remove(&peer_ip);
-                        }
-                    });
                 }
-                Err(error) => {
-                    // A transient accept error must not silently kill the
-                    // long-running peer service.
-                    warn!("Peer TCP accept failed; retrying: {error}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
+            });
         }
+
+        // The peer server is a long-lived service. The spawned accept loops
+        // remain active until the Tokio runtime shuts down.
+        std::future::pending::<()>().await;
+        Ok(())
     }
 
     async fn handle_connection(
