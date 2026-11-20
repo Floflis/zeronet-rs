@@ -561,7 +561,9 @@ mod tests {
     #[tokio::test]
     async fn site_list_responses_are_cached_for_watched_sites() {
         let socket = Arc::new(
-            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("bind service socket"),
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("bind service socket"),
         );
         let address = "1HeLLo4uzjaLetFx6NH3PMwFP3qbRbTf3D";
         let mut state = DiscoveryState::default();
