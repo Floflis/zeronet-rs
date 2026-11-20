@@ -56,52 +56,37 @@ fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, Dispatch
 }
 
 fn required_u64(params: &Value, key: &str) -> Result<u64, DispatchError> {
-    params
-        .get(key)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            (
-                "invalid_params".into(),
-                format!("params.{key} must be an unsigned integer"),
-            )
-        })
+    params.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        (
+            "invalid_params".into(),
+            format!("params.{key} must be an unsigned integer"),
+        )
+    })
 }
 
-fn required_string_array(
-    params: &Value,
-    key: &str,
-) -> Result<Vec<String>, DispatchError> {
-    let values = params
-        .get(key)
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            (
-                "invalid_params".into(),
-                format!("params.{key} must be an array of strings"),
-            )
-        })?;
+fn required_string_array(params: &Value, key: &str) -> Result<Vec<String>, DispatchError> {
+    let values = params.get(key).and_then(Value::as_array).ok_or_else(|| {
+        (
+            "invalid_params".into(),
+            format!("params.{key} must be an array of strings"),
+        )
+    })?;
 
     values
         .iter()
         .enumerate()
         .map(|(index, value)| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    (
-                        "invalid_params".into(),
-                        format!("params.{key}[{index}] must be a string"),
-                    )
-                })
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                (
+                    "invalid_params".into(),
+                    format!("params.{key}[{index}] must be a string"),
+                )
+            })
         })
         .collect()
 }
 
-async fn dispatch(
-    method: &str,
-    params: &Value,
-) -> Result<Value, DispatchError> {
+async fn dispatch(method: &str, params: &Value) -> Result<Value, DispatchError> {
     match method {
         "system.ping" => Ok(json!({
             "name": "zeronet-rs",
@@ -136,14 +121,9 @@ async fn dispatch(
             let revision = required_u64(params, "revision")?;
             let local_sites = required_string_array(params, "local_sites")?;
 
-            discovery::lan::start(
-                local_sites.clone(),
-                peer_id,
-                fileserver_port,
-                revision,
-            )
-            .await
-            .map_err(|error| ("lan_start_failed".into(), error.to_string()))?;
+            discovery::lan::start(local_sites.clone(), peer_id, fileserver_port, revision)
+                .await
+                .map_err(|error| ("lan_start_failed".into(), error.to_string()))?;
 
             LAN_CONFIGURED.store(true, Ordering::Release);
 
