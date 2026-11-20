@@ -59,6 +59,7 @@ lazy_static! {
             "cryptVerify".into(),
             // "cryptGetPrivateKey".into()
             "getConfig".into(),
+            "bridge".into(),
             "siteFindPeers".into(),
             "sitePeerExchange".into(),
             "siteFetchChanges".into(),
