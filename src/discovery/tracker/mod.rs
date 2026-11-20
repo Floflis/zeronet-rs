@@ -10,7 +10,7 @@ pub mod zero;
 
 use std::{
     io::Error,
-    net::{Ipv4Addr, SocketAddr, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
 };
 
 use decentnet_protocol::address::PeerAddr;
@@ -69,6 +69,97 @@ pub enum Addr {
     Zero(SocketAddr),
 }
 
+/// Validate a tracker URL without resolving DNS. This keeps configuration
+/// loading deterministic and lets operators retain ordinary DNS endpoints
+/// without requiring a network lookup during startup.
+pub fn validate_tracker_address(tracker: &str) -> Result<(), String> {
+    let (scheme, address) = tracker.split_once("://").unwrap_or(("http", tracker));
+    match scheme {
+        "udp" | "http" | "zero" => {}
+        "https" => return Err("https:// trackers are not implemented".to_string()),
+        other => return Err(format!("unsupported tracker scheme: {other}")),
+    }
+
+    let authority = address.split('/').next().unwrap_or("").trim();
+    if authority.is_empty() {
+        return Err("tracker address is empty".to_string());
+    }
+
+    if authority.contains('#') && scheme == "zero" {
+        return Err(
+            "zero:// certificate-pinned trackers require TLS support, which is not enabled"
+                .to_string(),
+        );
+    }
+
+    validate_authority_syntax(authority)?;
+
+    // Onion hostnames must be dialed through Tor's SOCKS interface. Resolving
+    // them through the system resolver would leak the lookup and cannot work.
+    if authority_host(authority).is_some_and(|host| host.ends_with(".onion")) {
+        return Err("onion trackers require the Tor transport, which is not enabled".to_string());
+    }
+
+    Ok(())
+}
+
+fn authority_host(authority: &str) -> Option<&str> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        rest.split_once("]:").map(|(host, _)| host)
+    } else {
+        authority.rsplit_once(':').map(|(host, _)| host)
+    }
+}
+
+fn validate_authority_syntax(authority: &str) -> Result<(), String> {
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let (host, port) = rest
+            .split_once("]:")
+            .ok_or_else(|| format!("invalid bracketed tracker address: {authority}"))?;
+        if host.parse::<Ipv6Addr>().is_err() {
+            return Err(format!("invalid IPv6 tracker host: {host}"));
+        }
+        (host, port)
+    } else {
+        let (host, port) = authority
+            .rsplit_once(':')
+            .ok_or_else(|| format!("tracker port is missing: {authority}"))?;
+        if host.contains(':') && host.parse::<Ipv6Addr>().is_err() {
+            return Err(format!("invalid IPv6 tracker host: {host}"));
+        }
+        (host, port)
+    };
+
+    if host.is_empty() || host.chars().any(char::is_whitespace) {
+        return Err(format!("invalid tracker host: {host}"));
+    }
+
+    if host.parse::<Ipv4Addr>().is_err() && host.parse::<Ipv6Addr>().is_err() {
+        let valid_hostname = host.len() <= 253
+            && host.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && label.as_bytes()[0].is_ascii_alphanumeric()
+                    && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            });
+        if !valid_hostname {
+            return Err(format!("invalid tracker host: {host}"));
+        }
+    }
+
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| format!("invalid tracker port in {authority}"))?;
+    if port == 0 {
+        return Err("tracker port must be greater than zero".to_string());
+    }
+
+    Ok(())
+}
+
 fn resolve_authority(authority: &str) -> Result<SocketAddr, String> {
     if let Ok(mut addresses) = authority.to_socket_addrs() {
         if let Some(address) = addresses.next() {
@@ -101,6 +192,7 @@ fn resolve_authority(authority: &str) -> Result<SocketAddr, String> {
 /// Parse an explicit tracker scheme. Bare host:port entries remain HTTP for
 /// backwards compatibility with the previous tracker list parser.
 pub fn make_addr(tracker: &str) -> Result<Addr, String> {
+    validate_tracker_address(tracker)?;
     let (scheme, address) = tracker.split_once("://").unwrap_or(("http", tracker));
     let authority = address.split('/').next().unwrap_or("").trim();
 
@@ -173,6 +265,27 @@ mod tests {
             hex::encode(info_hash),
             "29d191d7caf351ba054a9cb38e8d8477c19bdd1c"
         );
+    }
+
+    #[test]
+    fn validates_supported_tracker_schemes_without_dns_lookups() {
+        assert!(validate_tracker_address("zero://127.0.0.1:15441").is_ok());
+        assert!(validate_tracker_address("udp://tracker.example:6969/announce").is_ok());
+        assert!(validate_tracker_address("http://[::1]:8080/announce").is_ok());
+        assert!(validate_tracker_address("2001:db8::1:15441").is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_and_unavailable_tracker_endpoints() {
+        assert!(validate_tracker_address("http://:8080").is_err());
+        assert!(validate_tracker_address("udp://tracker.example:nope").is_err());
+        assert!(validate_tracker_address("zero://tracker.example:0").is_err());
+        assert!(validate_tracker_address("ftp://tracker.example:21").is_err());
+        assert!(validate_tracker_address("https://tracker.example:443").is_err());
+        assert!(validate_tracker_address(
+            "zero://tracker.example#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:443"
+        ).is_err());
+        assert!(validate_tracker_address("zero://example.onion:15441").is_err());
     }
 
     #[test]
