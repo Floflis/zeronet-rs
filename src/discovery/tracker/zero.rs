@@ -12,7 +12,7 @@
 use std::{
     collections::HashSet,
     io::{self, ErrorKind, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{Ipv6Addr, SocketAddr, TcpStream},
     time::Duration,
 };
 
@@ -162,6 +162,14 @@ fn validate_site_hash(site_hash: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn opened_service_types(mesh_addresses: &[Ipv6Addr]) -> Vec<String> {
+    if mesh_addresses.iter().any(crate::net::mesh::is_mesh_ipv6) {
+        vec!["ipv6".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Shared ZeroNet handshake/announce exchange for direct and Tor streams.
 fn announce_stream<S: Read + Write>(
     stream: &mut S,
@@ -176,6 +184,12 @@ fn announce_stream<S: Read + Write>(
     send_request(stream, "handshake", 0, handshake)?;
     read_ack(stream, 0)?;
 
+    let mesh_addresses = crate::net::mesh::discover_mesh_ipv6_addresses();
+    let add = opened_service_types(&mesh_addresses);
+    if !add.is_empty() {
+        info!("Announcing IPv6 peer service for mesh addresses: {mesh_addresses:?}");
+    }
+
     let announce = AnnounceRequest {
         hashes: vec![ByteBuf::from(site_hash)],
         onions: Vec::new(),
@@ -185,7 +199,7 @@ fn announce_stream<S: Read + Write>(
         need_types: vec!["ip4".into(), "ipv4".into(), "ipv6".into()],
         // Real service types remain empty until the peer listener is active
         // and externally reachable service types can be established.
-        add: Vec::new(),
+        add,
         need_num: 20,
     };
 
@@ -298,6 +312,16 @@ mod tests {
         cmd: String,
         req_id: usize,
         params: AnnounceRequest,
+    }
+
+    #[test]
+    fn advertises_ipv6_only_when_a_mesh_route_is_present() {
+        let cjdns = "fcab:1234::1".parse::<Ipv6Addr>().unwrap();
+        let yggdrasil = "200:1234::1".parse::<Ipv6Addr>().unwrap();
+
+        assert_eq!(opened_service_types(&[]), Vec::<String>::new());
+        assert_eq!(opened_service_types(&[cjdns]), vec!["ipv6"]);
+        assert_eq!(opened_service_types(&[yggdrasil]), vec!["ipv6"]);
     }
 
     #[test]
