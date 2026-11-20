@@ -80,8 +80,7 @@ branch = "decentnet"
 git = "https://github.com/decentnetwork/decentnet_protocol.git"
 features = ["full"]
 
-[dependencies.wit-bindgen-wasmer]
-package = "wai-bindgen-wasmer"
+[dependencies.wai-bindgen-wasmer]
 version = "0.601.0"
 features = ["sys"]
 
