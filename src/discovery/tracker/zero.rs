@@ -71,12 +71,7 @@ fn invalid_data(message: impl ToString) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message.to_string())
 }
 
-fn send_request<W, T>(
-    writer: &mut W,
-    cmd: &'static str,
-    req_id: usize,
-    params: T,
-) -> io::Result<()>
+fn send_request<W, T>(writer: &mut W, cmd: &'static str, req_id: usize, params: T) -> io::Result<()>
 where
     W: Write,
     T: Serialize,
@@ -205,18 +200,13 @@ pub async fn zero_announce(
 ) -> io::Result<Vec<PeerAddr>> {
     tokio::task::spawn_blocking(move || announce_blocking(address, site_hash, port))
         .await
-        .map_err(|error| {
-            io::Error::other(format!("tracker worker failed: {error}"))
-        })?
+        .map_err(|error| io::Error::other(format!("tracker worker failed: {error}")))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        net::TcpListener,
-        thread,
-    };
+    use std::{net::TcpListener, thread};
 
     const PYTHON_RESPONSE_FIXTURE: &str =
         include_str!("fixtures/zero_announce_response.msgpack.hex");
@@ -306,11 +296,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_site_hash_length() {
-        let result = announce_blocking(
-            "127.0.0.1:1".parse().unwrap(),
-            vec![0; 20],
-            15441,
-        );
+        let result = announce_blocking("127.0.0.1:1".parse().unwrap(), vec![0; 20], 15441);
         assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
     }
 

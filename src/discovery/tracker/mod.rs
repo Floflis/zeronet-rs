@@ -101,9 +101,7 @@ fn resolve_authority(authority: &str) -> Result<SocketAddr, String> {
 /// Parse an explicit tracker scheme. Bare host:port entries remain HTTP for
 /// backwards compatibility with the previous tracker list parser.
 pub fn make_addr(tracker: &str) -> Result<Addr, String> {
-    let (scheme, address) = tracker
-        .split_once("://")
-        .unwrap_or(("http", tracker));
+    let (scheme, address) = tracker.split_once("://").unwrap_or(("http", tracker));
     let authority = address.split('/').next().unwrap_or("").trim();
 
     if authority.is_empty() {
