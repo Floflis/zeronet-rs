@@ -26,7 +26,7 @@ The native LAN discovery service is a core networking feature. It must not depen
 
 ## Tracker interoperability
 
-Keep tracker discovery independent from LAN discovery. The current tracker address parser distinguishes UDP from HTTP and otherwise falls through to HTTP; this is not sufficient for ZeroNet's native `zero://` tracker protocol.
+Keep tracker discovery independent from LAN discovery. Native ZeroNet `zero://` announces use the peer TCP connection and named MessagePack framing; they are distinct from BitTorrent HTTP and UDP announces.
 
 ### Native `zero://` protocol
 
