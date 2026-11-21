@@ -609,14 +609,14 @@ mod tests {
         assert!(is_valid_peer_handshake(&handshake));
     }
 
-    #[test]
-    fn bind_helper_accepts_ipv4_wildcard_listener() {
+    #[tokio::test]
+    async fn bind_helper_accepts_ipv4_wildcard_listener() {
         let listener = bind_peer_listener("0.0.0.0:0".parse().unwrap()).unwrap();
         assert!(listener.local_addr().unwrap().is_ipv4());
     }
 
-    #[test]
-    fn bind_helper_accepts_ipv6_loopback_when_ipv6_is_available() {
+    #[tokio::test]
+    async fn bind_helper_accepts_ipv6_loopback_when_ipv6_is_available() {
         let address: SocketAddr = "[::1]:0".parse().unwrap();
         match bind_peer_listener(address) {
             Ok(listener) => assert!(listener.local_addr().unwrap().is_ipv6()),
