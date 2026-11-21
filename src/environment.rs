@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::current_dir, fs, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, env::current_dir, fs, io, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
 
 use clap::{Arg, ArgMatches, Command};
 use lazy_static::lazy_static;
@@ -89,6 +89,7 @@ pub struct Environment {
     pub data_path: PathBuf,
     pub log_path: PathBuf,
     pub fileserver_ip: String,
+    pub fileserver_ip_type: String,
     pub fileserver_port: u16,
     pub ui_ip: String,
     pub ui_port: u16,
@@ -233,7 +234,12 @@ fn get_matches() -> ArgMatches {
             Arg::new("FILESERVER_IP")
                 .long("fileserver_ip")
                 .default_value("*")
-                .help("Fileserver bind address (* means all IPv4 interfaces)"),
+                .help("Fileserver bind address (* means the wildcard addresses selected below)"),
+            Arg::new("FILESERVER_IP_TYPE")
+                .long("fileserver_ip_type")
+                .default_value("dual")
+                .value_parser(["ipv4", "ipv6", "dual"])
+                .help("Peer listener address families for wildcard binds"),
             Arg::new("FILESERVER_PORT")
                 .long("fileserver_port")
                 .default_value("10000-40000")
@@ -242,11 +248,6 @@ fn get_matches() -> ArgMatches {
                 .long("site_peers_need")
                 .default_value("1")
                 .help("Minimum Peers need for Site communication"),
-            // Arg::new("FILESERVER_IP_TYPE")
-            //     .long("fileserver_ip_type")
-            //     .default_value("dual")
-            //     .possible_values(&["ipv4", "ipv6", "dual"])
-            //     .help("Fileserver ip type"),
             // Arg::new("IP_LOCAL")
             //     .long("ip_local")
             //     .default_value("['127.0.0.1', '::1']")
@@ -272,13 +273,55 @@ fn get_matches() -> ArgMatches {
         .get_matches()
 }
 
-/// Translate the historical wildcard option into an actual all-interface bind.
+/// Translate the historical wildcard option into an actual IPv4 wildcard.
 fn normalize_fileserver_ip(ip: &str) -> String {
     if ip == "*" {
         "0.0.0.0".to_owned()
     } else {
         ip.to_owned()
     }
+}
+
+/// Resolve the peer-listener addresses selected by --fileserver_ip_type.
+///
+/// Wildcard addresses create independent IPv4 and/or IPv6 listeners. An
+/// explicit interface address remains scoped to that address.
+pub fn fileserver_bind_addresses(
+    ip: &str,
+    ip_type: &str,
+    port: u16,
+) -> io::Result<Vec<SocketAddr>> {
+    let is_wildcard = ip == "*"
+        || ip.parse::<IpAddr>()
+            .map(|address| address.is_unspecified())
+            .unwrap_or(false);
+
+    if !is_wildcard {
+        let address = ip.parse::<IpAddr>().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid fileserver bind address {ip:?}: {error}"),
+            )
+        })?;
+        return Ok(vec![SocketAddr::new(address, port)]);
+    }
+
+    let mut addresses = Vec::new();
+    match ip_type {
+        "ipv4" => addresses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)),
+        "ipv6" => addresses.push(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)),
+        "dual" => {
+            addresses.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+            addresses.push(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port));
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported fileserver IP type: {other}"),
+            ));
+        }
+    }
+    Ok(addresses)
 }
 
 pub fn get_env(matches: &ArgMatches) -> Result<Environment, Error> {
@@ -302,6 +345,10 @@ pub fn get_env(matches: &ArgMatches) -> Result<Environment, Error> {
         .get_one::<String>("FILESERVER_IP")
         .map(|ip| normalize_fileserver_ip(ip))
         .unwrap_or_else(|| unreachable!());
+    let fileserver_ip_type = matches
+        .get_one::<String>("FILESERVER_IP_TYPE")
+        .cloned()
+        .unwrap_or_else(|| "dual".to_owned());
     let fileserver_port = if let Some(port) = matches.get_one::<String>("FILESERVER_PORT") {
         if port.contains("10000-40000") {
             let mut rng = rand::thread_rng();
@@ -340,6 +387,7 @@ pub fn get_env(matches: &ArgMatches) -> Result<Environment, Error> {
         data_path,
         log_path,
         fileserver_ip,
+        fileserver_ip_type,
         fileserver_port,
         ui_ip: String::from(ui_ip),
         ui_port,
@@ -382,6 +430,7 @@ pub fn client_info() -> serde_json::Value {
     json!({
         "platform": os,
         "fileserver_ip": *ENV.fileserver_ip,
+        "fileserver_ip_type": *ENV.fileserver_ip_type,
         "fileserver_port": ENV.fileserver_port,
         "version": *VERSION,
         "rev": *REV,
@@ -397,16 +446,56 @@ pub fn client_info() -> serde_json::Value {
 
 #[cfg(test)]
 mod fileserver_bind_tests {
-    use super::normalize_fileserver_ip;
+    use super::{fileserver_bind_addresses, normalize_fileserver_ip};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     #[test]
-    fn wildcard_binds_all_ipv4_interfaces() {
+    fn wildcard_defaults_to_dual_stack_addresses() {
         assert_eq!(normalize_fileserver_ip("*"), "0.0.0.0");
+        assert_eq!(
+            fileserver_bind_addresses("*", "dual", 15441).unwrap(),
+            vec![
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 15441),
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 15441),
+            ]
+        );
     }
 
     #[test]
-    fn explicit_fileserver_bind_address_is_preserved() {
-        assert_eq!(normalize_fileserver_ip("127.0.0.1"), "127.0.0.1");
-        assert_eq!(normalize_fileserver_ip("192.0.2.10"), "192.0.2.10");
+    fn wildcard_can_select_one_address_family() {
+        assert_eq!(
+            fileserver_bind_addresses("*", "ipv4", 15441).unwrap(),
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 15441)]
+        );
+        assert_eq!(
+            fileserver_bind_addresses("*", "ipv6", 15441).unwrap(),
+            vec![SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 15441)]
+        );
+    }
+
+    #[test]
+    fn unspecified_ip_uses_the_selected_families() {
+        assert_eq!(fileserver_bind_addresses("::", "dual", 15441).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn explicit_interface_addresses_remain_scoped() {
+        assert_eq!(
+            fileserver_bind_addresses("127.0.0.1", "dual", 15441).unwrap(),
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 15441)]
+        );
+        assert_eq!(
+            fileserver_bind_addresses("2001:db8::10", "dual", 15441).unwrap(),
+            vec![SocketAddr::new(
+                IpAddr::V6("2001:db8::10".parse::<Ipv6Addr>().unwrap()),
+                15441
+            )]
+        );
+    }
+
+    #[test]
+    fn invalid_bind_addresses_and_families_are_rejected() {
+        assert!(fileserver_bind_addresses("not-an-ip", "dual", 15441).is_err());
+        assert!(fileserver_bind_addresses("*", "ipv5", 15441).is_err());
     }
 }
