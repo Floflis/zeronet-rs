@@ -16,11 +16,11 @@ This file is now a record of the delivered behavior and its boundaries. The old 
 ### 1. Evidence-backed external reachability
 
 - IPv4 and IPv6 reachability evidence is tracked independently.
-- Evidence is recorded only after a valid inbound ZeroNet v2 peer handshake from a globally routable source address. A TCP accept, successful local bind, configured port, outbound tracker connection or LAN discovery exchange alone is not proof.
+- Evidence is recorded only after a valid inbound ZeroNet v2 peer handshake from a globally routable source address or a recognized CJDNS/Yggdrasil overlay source. A TCP accept, successful local bind, configured port, outbound tracker connection or LAN discovery exchange alone is not proof.
 - Evidence expires after 15 minutes.
 - Private, shared, loopback, link-local, documentation, benchmarking, multicast and reserved address ranges are excluded. IPv4-mapped IPv6 addresses are handled consistently.
 - The handshake `port_opened` flag and tracker announce `add` service types use the same positive evidence model.
-- The IPv4/IPv6 service types are advertised only when supported by fresh evidence. Onion is not advertised because local onion-service hosting and the required identity/signing support are not implemented.
+- The IPv4/IPv6 service types are advertised only when supported by fresh evidence. CJDNS (`fc00::/8`) and Yggdrasil (`0200::/7`) inbound peers count as IPv6 evidence, but only when an IPv6 listener is active. Onion is not advertised because local onion-service hosting and the required identity/signing support are not implemented.
 
 A successful inbound handshake is evidence of observed reachability from that source/network at that time. It is not a universal guarantee that every ISP, NAT or remote peer can reach the service.
 
@@ -44,6 +44,7 @@ A successful inbound handshake is evidence of observed reachability from that so
 The implementation added coverage for:
 
 - IPv4/IPv6 reachability classification, mapped IPv4, special-purpose ranges, address-family separation and evidence expiry.
+- CJDNS/Yggdrasil source classification and rejection of mesh evidence when no IPv6 listener is configured.
 - Valid and invalid inbound peer-handshake validation.
 - Multi-site response grouping, per-site deduplication, and empty/partial response handling.
 - A mock TCP tracker exercising ordered hashes, service-type `add`, `delete=true` and empty-site full sync.

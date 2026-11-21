@@ -1,9 +1,16 @@
-use std::{collections::HashMap, fs::File, io::Read, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use itertools::Itertools;
 use log::*;
 use serde_bytes::ByteBuf;
-use std::time::Instant;
+use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -22,7 +29,7 @@ use zerucontent::Content;
 use crate::{
     core::{error::Error, io::SiteIO, peer::Peer, site::Site, site_registry::SiteRegistry},
     discovery::{reachability::ReachabilityEvidence, tracker::full::TrackerPeerCache},
-    environment::ENV,
+    environment::{fileserver_bind_addresses, ENV},
     net::Protocol,
     SitesController,
 };
@@ -36,8 +43,26 @@ fn is_valid_peer_handshake(handshake: &Handshake) -> bool {
     handshake.protocol == "v2" && !handshake.peer_id.trim().is_empty()
 }
 
+fn bind_peer_listener(address: SocketAddr) -> std::io::Result<TcpListener> {
+    let domain = if address.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))?;
+    socket.set_reuse_address(true)?;
+
+    // Keep the IPv6 socket separate from IPv4; the shared controller
+    // combines their reachability evidence for one peer-serving service.
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+
+    socket.bind(&address.into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    let listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(listener)
+}
+
 pub struct ConnectionController {
-    listener: Arc<TcpListener>,
+    listeners: Vec<Arc<TcpListener>>,
     sites_controller: SitesController,
     site_registry: SiteRegistry,
     reachability: ReachabilityEvidence,
@@ -63,12 +88,41 @@ impl ConnectionController {
         site_registry: SiteRegistry,
         tracker_peer_cache: TrackerPeerCache,
     ) -> Result<Self, Error> {
-        let ser_addr = format!("{}:{}", ENV.fileserver_ip, ENV.fileserver_port);
-        info!("Listening on {ser_addr}");
-        let listener = Arc::new(TcpListener::bind(ser_addr).await?);
-        let reachability = ReachabilityEvidence::new(listener.local_addr()?);
+        let bind_addresses = fileserver_bind_addresses(
+            &ENV.fileserver_ip,
+            &ENV.fileserver_ip_type,
+            ENV.fileserver_port,
+        )?;
+        let mut listeners = Vec::new();
+        let mut listener_addresses = Vec::new();
+
+        for address in bind_addresses {
+            match bind_peer_listener(address) {
+                Ok(listener) => {
+                    let local_address = listener.local_addr()?;
+                    info!("Peer TCP listener bound on {local_address}");
+                    listener_addresses.push(local_address);
+                    listeners.push(Arc::new(listener));
+                }
+                Err(error) => {
+                    // Dual-stack is best-effort: retain the address family
+                    // that is available if the other stack is disabled.
+                    warn!("Could not bind peer listener on {address}: {error}");
+                }
+            }
+        }
+
+        if listeners.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "could not bind any configured peer listener address",
+            )
+            .into());
+        }
+
+        let reachability = ReachabilityEvidence::new_for_listeners(listener_addresses);
         Ok(Self {
-            listener,
+            listeners,
             sites_controller,
             site_registry,
             reachability,
@@ -88,50 +142,60 @@ impl ConnectionController {
     /// Request handling is serialized only while mutating the shared site
     /// registry. A slow or long-lived peer therefore cannot block new accepts.
     pub async fn run(self) -> Result<(), Error> {
-        let listener = Arc::clone(&self.listener);
+        let listeners = self.listeners.clone();
         let controller = Arc::new(Mutex::new(self));
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, peer_addr)) => {
-                    let peer_ip = peer_addr.ip().to_string();
-                    {
-                        let mut state = controller.lock().await;
-                        state.conn_len += 1;
-                        *state.connections.entry(peer_ip.clone()).or_insert(0) += 1;
+        // Run a separate accept loop per address family. Each listener feeds
+        // the same controller and the same reachability evidence.
+        for listener in listeners {
+            let controller = Arc::clone(&controller);
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, peer_addr)) => {
+                            let peer_ip = peer_addr.ip().to_string();
+                            {
+                                let mut state = controller.lock().await;
+                                state.conn_len += 1;
+                                *state.connections.entry(peer_ip.clone()).or_insert(0) += 1;
+                            }
+
+                            let controller = Arc::clone(&controller);
+                            tokio::spawn(async move {
+                                if let Err(error) =
+                                    Self::handle_connection(stream, Arc::clone(&controller)).await
+                                {
+                                    debug!("Peer connection from {peer_addr} closed: {error}");
+                                }
+
+                                // Keep counters accurate even when a peer
+                                // disconnects while a request is processed.
+                                let mut state = controller.lock().await;
+                                state.conn_len = state.conn_len.saturating_sub(1);
+                                let remove_peer =
+                                    if let Some(count) = state.connections.get_mut(&peer_ip) {
+                                        *count = count.saturating_sub(1);
+                                        *count == 0
+                                    } else {
+                                        false
+                                    };
+                                if remove_peer {
+                                    state.connections.remove(&peer_ip);
+                                }
+                            });
+                        }
+                        Err(error) => {
+                            warn!("Peer TCP accept failed; retrying: {error}");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
                     }
-
-                    let controller = Arc::clone(&controller);
-                    tokio::spawn(async move {
-                        if let Err(error) =
-                            Self::handle_connection(stream, Arc::clone(&controller)).await
-                        {
-                            debug!("Peer connection from {peer_addr} closed: {error}");
-                        }
-
-                        // Keep the counters accurate even when a peer disconnects
-                        // while a request is being processed.
-                        let mut state = controller.lock().await;
-                        state.conn_len = state.conn_len.saturating_sub(1);
-                        let remove_peer = if let Some(count) = state.connections.get_mut(&peer_ip) {
-                            *count = count.saturating_sub(1);
-                            *count == 0
-                        } else {
-                            false
-                        };
-                        if remove_peer {
-                            state.connections.remove(&peer_ip);
-                        }
-                    });
                 }
-                Err(error) => {
-                    // A transient accept error must not silently kill the
-                    // long-running peer service.
-                    warn!("Peer TCP accept failed; retrying: {error}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
+            });
         }
+
+        // These accept loops are long-lived services and stop with the runtime.
+        std::future::pending::<()>().await;
+        Ok(())
     }
 
     async fn handle_connection(
@@ -549,6 +613,27 @@ mod tests {
     fn accepts_complete_zero_v2_handshakes_without_requiring_peer_service() {
         let handshake = crate::net::handshake().1;
         assert!(is_valid_peer_handshake(&handshake));
+    }
+
+    #[tokio::test]
+    async fn bind_helper_accepts_ipv4_wildcard_listener() {
+        let listener = bind_peer_listener("0.0.0.0:0".parse().unwrap()).unwrap();
+        assert!(listener.local_addr().unwrap().is_ipv4());
+    }
+
+    #[tokio::test]
+    async fn bind_helper_accepts_ipv6_loopback_when_ipv6_is_available() {
+        let address: SocketAddr = "[::1]:0".parse().unwrap();
+        match bind_peer_listener(address) {
+            Ok(listener) => assert!(listener.local_addr().unwrap().is_ipv6()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrNotAvailable
+                        | std::io::ErrorKind::Unsupported
+                ) => {}
+            Err(error) => panic!("unexpected IPv6 listener bind error: {error}"),
+        }
     }
 
     #[test]

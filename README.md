@@ -136,12 +136,18 @@ create local onion services or answer RSA onion-signing challenges.
 ## Peer TCP listener
 
 The normal daemon startup path starts the native peer TCP listener using
-`--fileserver_ip` and `--fileserver_port`. The default `--fileserver_ip=*`
-means `0.0.0.0`, binding all IPv4 interfaces. To keep peer serving local-only,
-set `--fileserver_ip=127.0.0.1`.
+`--fileserver_ip` and `--fileserver_port`. The default
+`--fileserver_ip=*` binds wildcard listeners for both IPv4 and IPv6. Select
+the address families with `--fileserver_ip_type=ipv4`, `ipv6`, or `dual`.
+Explicit interface addresses remain scoped to the address supplied.
 
-A successful local bind does **not** prove that the port is reachable from the
-public internet. Until external reachability and supported service types can
-be verified, peer handshakes continue to report `port_opened=false` and
-ZeroNet tracker announces keep `add=[]`. Router/NAT/firewall checks and
-service-type advertisement remain separate work.
+CJDNS and Yggdrasil use ordinary IPv6 sockets, so the client reuses its
+existing IPv6 TCP peer transport and `peers_ipv6` exchange. CJDNS addresses
+(`fc00::/8`) and Yggdrasil addresses (`0200::/7`) count as mesh IPv6
+reachability only after a valid inbound ZeroNet v2 handshake is received on
+an IPv6 listener. The evidence expires after 15 minutes; a configured route or
+local bind alone does not advertise the peer service to trackers.
+
+The existing LAN discovery service remains IPv4-broadcast based. Mesh peer
+discovery uses the existing tracker and IPv6 peer-exchange paths; IPv6 LAN
+multicast discovery is separate work.

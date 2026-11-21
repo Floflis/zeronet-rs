@@ -2,7 +2,7 @@
 //!
 //! A bind address, wildcard listener or outbound connection is not proof that
 //! peers can reach this node. Evidence is recorded only after a valid ZeroNet
-//! v2 handshake from a globally routable remote source and expires after 15m.
+//! v2 handshake from a globally routable or recognized overlay source and expires after 15m.
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -20,28 +20,33 @@ pub enum AddressFamily {
 
 #[derive(Clone)]
 pub struct ReachabilityEvidence {
-    // The evidence object is created per bound listener, so proofs do not
-    // accidentally transfer to a different bind address or port.
-    listener: SocketAddr,
+    // The evidence object covers one service port across its configured
+    // address-family listeners; proofs never transfer to another port.
+    listeners: Vec<SocketAddr>,
     observed: Arc<Mutex<HashMap<AddressFamily, Instant>>>,
 }
 
 impl ReachabilityEvidence {
     pub fn new(listener: SocketAddr) -> Self {
+        Self::new_for_listeners(vec![listener])
+    }
+
+    /// Track one service port exposed through one or more address-family listeners.
+    pub fn new_for_listeners(listeners: Vec<SocketAddr>) -> Self {
         Self {
-            listener,
+            listeners,
             observed: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Record a valid inbound handshake only when its source is globally
-    /// routable and the accepted socket family matches this listener.
+    /// Record a valid inbound handshake only from a public or recognized
+    /// mesh source whose address family is served by one of these listeners.
     pub fn record_inbound(&self, remote: IpAddr) -> Option<AddressFamily> {
         self.record_inbound_at(remote, Instant::now())
     }
 
     fn record_inbound_at(&self, remote: IpAddr, now: Instant) -> Option<AddressFamily> {
-        let family = globally_routable_family(remote)?;
+        let family = reachable_peer_family(remote)?;
         if !self.listener_accepts(family) {
             return None;
         }
@@ -78,16 +83,18 @@ impl ReachabilityEvidence {
     }
 
     fn listener_accepts(&self, family: AddressFamily) -> bool {
-        match self.listener.ip() {
+        self.listeners.iter().any(|listener| match listener.ip() {
             // A private interface may be reached through a port-forward. Its
-            // address is not evidence; the completed public-source handshake is.
+            // address is not evidence; the completed inbound handshake is.
             IpAddr::V4(_) => family == AddressFamily::Ipv4,
+            // The controller binds IPv6 sockets as IPv6-only and opens a
+            // separate IPv4 socket, so an unspecified v6 listener serves v6.
+            IpAddr::V6(address) if address.is_unspecified() => family == AddressFamily::Ipv6,
             IpAddr::V6(address) if address.to_ipv4_mapped().is_some() => {
                 family == AddressFamily::Ipv4
             }
-            IpAddr::V6(address) if address.is_unspecified() => true,
             IpAddr::V6(_) => family == AddressFamily::Ipv6,
-        }
+        })
     }
 }
 
@@ -96,6 +103,18 @@ fn address_family(address: IpAddr) -> AddressFamily {
         IpAddr::V4(_) => AddressFamily::Ipv4,
         IpAddr::V6(address) if address.to_ipv4_mapped().is_some() => AddressFamily::Ipv4,
         IpAddr::V6(_) => AddressFamily::Ipv6,
+    }
+}
+
+/// Return the address family for a source that can prove peer reachability.
+///
+/// CJDNS and Yggdrasil addresses are not public Internet unicast, but a valid
+/// inbound handshake from either overlay proves IPv6 reachability inside that
+/// mesh. Other special-purpose and private IPv6 ranges remain excluded.
+fn reachable_peer_family(address: IpAddr) -> Option<AddressFamily> {
+    match address {
+        IpAddr::V6(ip) if crate::net::mesh::is_mesh_ipv6(&ip) => Some(AddressFamily::Ipv6),
+        _ => globally_routable_family(address),
     }
 }
 
@@ -257,8 +276,35 @@ mod tests {
     }
 
     #[test]
+    fn records_cjdns_and_yggdrasil_handshakes_as_mesh_ipv6_evidence() {
+        let evidence = ReachabilityEvidence::new_for_listeners(vec![
+            "0.0.0.0:15441".parse().unwrap(),
+            "[::]:15441".parse().unwrap(),
+        ]);
+
+        for source in ["fcab:1234::1", "200:1234::1", "300:1234::1"] {
+            assert_eq!(
+                evidence.record_inbound(ip(source)),
+                Some(AddressFamily::Ipv6),
+                "{source}"
+            );
+        }
+        assert_eq!(evidence.service_types(), vec!["ipv6"]);
+    }
+
+    #[test]
+    fn mesh_ipv6_does_not_count_when_no_ipv6_listener_is_bound() {
+        let evidence = ReachabilityEvidence::new("0.0.0.0:15441".parse().unwrap());
+        assert_eq!(evidence.record_inbound(ip("fcab:1234::1")), None);
+        assert!(evidence.service_types().is_empty());
+    }
+
+    #[test]
     fn records_ipv4_and_ipv6_independently_on_wildcard_listener() {
-        let evidence = ReachabilityEvidence::new("[::]:15441".parse().unwrap());
+        let evidence = ReachabilityEvidence::new_for_listeners(vec![
+            "0.0.0.0:15441".parse().unwrap(),
+            "[::]:15441".parse().unwrap(),
+        ]);
         assert_eq!(
             evidence.record_inbound(ip("8.8.8.8")),
             Some(AddressFamily::Ipv4)
