@@ -1,4 +1,11 @@
-use std::{collections::HashMap, env::current_dir, fs, io, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
+use std::{
+    collections::HashMap,
+    env::current_dir,
+    fs, io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use clap::{Arg, ArgMatches, Command};
 use lazy_static::lazy_static;
