@@ -1,10 +1,16 @@
-use std::{collections::HashMap, fs::File, io::Read, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use itertools::Itertools;
 use log::*;
 use serde_bytes::ByteBuf;
 use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
-use std::time::Instant;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
