@@ -163,8 +163,13 @@ fn validate_site_hash(site_hash: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn opened_service_types(mesh_addresses: &[Ipv6Addr]) -> Vec<String> {
-    if mesh_addresses.iter().any(crate::net::mesh::is_mesh_ipv6) {
+fn opened_service_types(
+    ipv6_listener_enabled: bool,
+    mesh_addresses: &[Ipv6Addr],
+) -> Vec<String> {
+    if ipv6_listener_enabled
+        && mesh_addresses.iter().any(crate::net::mesh::is_mesh_ipv6)
+    {
         vec!["ipv6".to_owned()]
     } else {
         Vec::new()
@@ -186,7 +191,14 @@ fn announce_stream<S: Read + Write>(
     read_ack(stream, 0)?;
 
     let mesh_addresses = crate::net::mesh::discover_mesh_ipv6_addresses();
-    let add = opened_service_types(&mesh_addresses);
+    let ipv6_listener_enabled = crate::environment::fileserver_bind_addresses(
+        &crate::environment::ENV.fileserver_ip,
+        &crate::environment::ENV.fileserver_ip_type,
+        crate::environment::ENV.fileserver_port,
+    )
+    .map(|addresses| addresses.iter().any(SocketAddr::is_ipv6))
+    .unwrap_or(false);
+    let add = opened_service_types(ipv6_listener_enabled, &mesh_addresses);
     if !add.is_empty() {
         info!("Announcing IPv6 peer service for mesh addresses: {mesh_addresses:?}");
     }
@@ -316,13 +328,18 @@ mod tests {
     }
 
     #[test]
-    fn advertises_ipv6_only_when_a_mesh_route_is_present() {
+    fn advertises_ipv6_only_when_listener_and_mesh_route_are_available() {
         let cjdns = "fcab:1234::1".parse::<Ipv6Addr>().unwrap();
         let yggdrasil = "200:1234::1".parse::<Ipv6Addr>().unwrap();
 
-        assert_eq!(opened_service_types(&[]), Vec::<String>::new());
-        assert_eq!(opened_service_types(&[cjdns]), vec!["ipv6"]);
-        assert_eq!(opened_service_types(&[yggdrasil]), vec!["ipv6"]);
+        assert_eq!(
+            opened_service_types(false, &[cjdns]),
+            Vec::<String>::new(),
+            "an IPv4-only listener must not advertise IPv6"
+        );
+        assert_eq!(opened_service_types(true, &[]), Vec::<String>::new());
+        assert_eq!(opened_service_types(true, &[cjdns]), vec!["ipv6"]);
+        assert_eq!(opened_service_types(true, &[yggdrasil]), vec!["ipv6"]);
     }
 
     #[test]
