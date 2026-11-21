@@ -20,8 +20,8 @@ pub enum AddressFamily {
 
 #[derive(Clone)]
 pub struct ReachabilityEvidence {
-    // The evidence object is created per bound listener, so proofs do not
-    // accidentally transfer to a different bind address or port.
+    // The evidence object covers one service port across its configured
+    // address-family listeners; proofs never transfer to another port.
     listeners: Vec<SocketAddr>,
     observed: Arc<Mutex<HashMap<AddressFamily, Instant>>>,
 }
