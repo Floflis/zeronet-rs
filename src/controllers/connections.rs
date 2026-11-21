@@ -610,6 +610,27 @@ mod tests {
     }
 
     #[test]
+    fn bind_helper_accepts_ipv4_wildcard_listener() {
+        let listener = bind_peer_listener("0.0.0.0:0".parse().unwrap()).unwrap();
+        assert!(listener.local_addr().unwrap().is_ipv4());
+    }
+
+    #[test]
+    fn bind_helper_accepts_ipv6_loopback_when_ipv6_is_available() {
+        let address: SocketAddr = "[::1]:0".parse().unwrap();
+        match bind_peer_listener(address) {
+            Ok(listener) => assert!(listener.local_addr().unwrap().is_ipv6()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrNotAvailable
+                        | std::io::ErrorKind::Unsupported
+                ) => {}
+            Err(error) => panic!("unexpected IPv6 listener bind error: {error}"),
+        }
+    }
+
+    #[test]
     fn rejects_wrong_protocol_and_empty_peer_identity() {
         let mut handshake = crate::net::handshake().1;
         handshake.protocol = "v1".into();
