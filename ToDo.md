@@ -36,7 +36,7 @@ The Python reference implementation is `HelloZeroNet/ZeroNet`'s `plugins/Announc
 - [x] Reuse the existing ZeroNet handshake builder and named MessagePack framing for native `announce` over the peer TCP stream. The `announce` command is sent by the Rust tracker module because the current `zeronet_protocol` command enum does not expose it.
 - [x] Implement the single-site AnnounceZero request shape and required fields: `hashes`, `onions`, `port`, `need_types`, `need_num`, and `add`.
 - [x] Start and supervise the peer TCP listener in the normal daemon startup path. The default `--fileserver_ip=*` now binds all IPv4 interfaces, and accepted peer sockets are handled independently so one connection cannot block new accepts.
-- [ ] Determine externally reachable service types for `add`. A successful local bind is not proof of public reachability; until an external check is available, outgoing handshakes must continue to report `port_opened=false` and announces must keep `add=[]`.
+- [x] Determine reachable service types for `add` from fresh inbound ZeroNet v2 handshake evidence, scoped by listener address family and expiring after 15 minutes. A local bind or outbound connection alone is not proof of reachability.
   - [ ] Support the optional `delete` behavior used when announcing the complete set of locally served sites (multi-site full announce is not implemented yet).
   - [x] Route native `zero://*.onion` tracker connections through the existing `tor-stream` dependency and a local Tor SOCKS5 proxy, preserving the onion hostname instead of resolving it with system DNS. Default proxy: `127.0.0.1:9050`; override with `ZERONET_TOR_SOCKS`.
 - [x] Test the SOCKS5 path with a local proxy fixture that asserts the `.onion` domain is sent as a hostname and completes a handshake/announce exchange through the proxy.
@@ -55,6 +55,15 @@ The Python reference implementation is `HelloZeroNet/ZeroNet`'s `plugins/Announc
 - [x] Add tests for empty configuration, comments/blank lines, duplicate entries, malformed addresses, unsupported schemes, and mixed tracker protocols.
 - [x] Document how operators can supply and update tracker endpoints without recompiling the client.
 
+## IPv6 overlay mesh peer connectivity
+
+- [x] Add configurable IPv4, IPv6 and dual-stack TCP peer listeners.
+- [x] Reuse the standard IPv6 TCP transport and `peers_ipv6` exchange for mesh peers.
+- [x] Count valid inbound CJDNS (`fc00::/8`) and Yggdrasil (`0200::/7`) handshakes as IPv6 reachability evidence, only when an IPv6 listener is bound.
+- [ ] Verify inbound and outbound peer handshakes between two real CJDNS clients.
+- [ ] Repeat interoperability validation between two real Yggdrasil clients.
+- [ ] Validate dual-stack binding and mesh reachability on Linux, Windows, macOS and Android.
+
 ## Later: compare ZeroNet implementations
 
 After LAN interoperability is validated, compare the relevant implementations and versions for:
@@ -71,16 +80,3 @@ After LAN interoperability is validated, compare the relevant implementations an
 - Do not add I2P support as part of this work.
 - Keep tracker discovery available; LAN discovery is an additional peer-discovery path.
 - LAN-discovered peers are untrusted candidates and must still pass the normal peer handshake and validation.
-
-## IPv6 overlay mesh support
-
-- [x] Add selectable IPv4, IPv6, and dual-stack peer listener binds.
-- [x] Detect local CJDNS (`fc00::/8`) and Yggdrasil (`0200::/7`) routes using
-  local UDP route lookups without sending probe packets.
-- [x] Advertise the `ipv6` service type to native ZeroNet trackers only when a
-  local CJDNS or Yggdrasil route is detected.
-- [ ] Verify inbound and outbound peer interoperability between two real
-  clients on CJDNS and on Yggdrasil.
-- [ ] Verify dual-stack listener behavior on Linux, Windows, macOS, and Android.
-- [ ] Re-check mesh routes after interface or overlay state changes without
-  requiring a client restart.

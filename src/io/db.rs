@@ -390,10 +390,10 @@ impl DbManager {
                 if v.is_empty() {
                     continue;
                 }
-            } else if let Value::Object(v) = value
-                && v.is_empty()
-            {
-                continue;
+            } else if let Value::Object(v) = value {
+                if v.is_empty() {
+                    continue;
+                }
             }
 
             let mut import_cols = vec![];

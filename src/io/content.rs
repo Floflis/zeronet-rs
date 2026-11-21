@@ -109,10 +109,10 @@ impl Site {
             if let Some(content) = self.content(Some(inner_path)) {
                 valid_signers.extend(content.signers.clone());
             }
-        } else if let Some(rules) = self.get_file_rules(inner_path)
-            && let Some(Value::String(signers)) = rules.get("signers")
-        {
-            valid_signers.insert(signers.clone());
+        } else if let Some(rules) = self.get_file_rules(inner_path) {
+            if let Some(Value::String(signers)) = rules.get("signers") {
+                valid_signers.insert(signers.clone());
+            }
         }
         valid_signers.insert(self.address().to_string());
         valid_signers
@@ -266,11 +266,13 @@ impl Site {
             rules.insert("signers".to_string(), json!(Vec::<String>::new()));
         }
 
-        if !banned && let Some(signers) = rules.get_mut("signers") {
-            signers
-                .as_array_mut()
-                .unwrap()
-                .push(json!(user_address.clone())); // Add user as valid signer
+        if !banned {
+            if let Some(signers) = rules.get_mut("signers") {
+                signers
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!(user_address.clone())); // Add user as valid signer
+            }
         }
         rules.insert("user_address".to_string(), json!(user_address));
         rules.insert("includes_allowed".to_string(), json!(false));

@@ -1,10 +1,16 @@
-use std::{collections::HashMap, fs::File, io::Read, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use itertools::Itertools;
 use log::*;
 use serde_bytes::ByteBuf;
 use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
-use std::time::Instant;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -21,19 +27,29 @@ use zeronet_protocol::ZeroConnection;
 use zerucontent::Content;
 
 use crate::{
-    core::{error::Error, io::SiteIO, peer::Peer},
+    core::{error::Error, io::SiteIO, peer::Peer, site::Site, site_registry::SiteRegistry},
+    discovery::{reachability::ReachabilityEvidence, tracker::full::TrackerPeerCache},
     environment::{fileserver_bind_addresses, ENV},
     net::Protocol,
     SitesController,
 };
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SiteRequest {
+    site: String,
+}
+
+fn is_valid_peer_handshake(handshake: &Handshake) -> bool {
+    handshake.protocol == "v2" && !handshake.peer_id.trim().is_empty()
+}
 
 fn bind_peer_listener(address: SocketAddr) -> std::io::Result<TcpListener> {
     let domain = if address.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
     let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))?;
     socket.set_reuse_address(true)?;
 
-    // Separate IPv4 and IPv6 sockets make dual-stack behavior predictable
-    // across operating systems.
+    // Keep the IPv6 socket separate from IPv4; the shared controller
+    // combines their reachability evidence for one peer-serving service.
     if address.is_ipv6() {
         socket.set_only_v6(true)?;
     }
@@ -48,29 +64,49 @@ fn bind_peer_listener(address: SocketAddr) -> std::io::Result<TcpListener> {
 pub struct ConnectionController {
     listeners: Vec<Arc<TcpListener>>,
     sites_controller: SitesController,
+    site_registry: SiteRegistry,
+    reachability: ReachabilityEvidence,
+    tracker_peer_cache: TrackerPeerCache,
     conn_len: usize,
     connections: HashMap<String, usize>,
 }
 
 impl ConnectionController {
     pub async fn new(sites_controller: SitesController) -> Result<Self, Error> {
+        Self::new_with_registry(
+            sites_controller,
+            SiteRegistry::default(),
+            TrackerPeerCache::default(),
+        )
+        .await
+    }
+
+    /// Construct the peer listener with the live serving-site registry and
+    /// the cache populated by native ZeroNet tracker full-announces.
+    pub async fn new_with_registry(
+        sites_controller: SitesController,
+        site_registry: SiteRegistry,
+        tracker_peer_cache: TrackerPeerCache,
+    ) -> Result<Self, Error> {
         let bind_addresses = fileserver_bind_addresses(
             &ENV.fileserver_ip,
             &ENV.fileserver_ip_type,
             ENV.fileserver_port,
         )?;
         let mut listeners = Vec::new();
+        let mut listener_addresses = Vec::new();
 
         for address in bind_addresses {
             match bind_peer_listener(address) {
                 Ok(listener) => {
-                    info!("Peer TCP listener bound on {}", listener.local_addr()?);
+                    let local_address = listener.local_addr()?;
+                    info!("Peer TCP listener bound on {local_address}");
+                    listener_addresses.push(local_address);
                     listeners.push(Arc::new(listener));
                 }
                 Err(error) => {
-                    // Dual-stack is best-effort: retain a working address
-                    // family when the OS has IPv6 disabled or an interface
-                    // is temporarily unavailable.
+                    // Dual-stack is best-effort: retain the address family
+                    // that is available if the other stack is disabled.
                     warn!("Could not bind peer listener on {address}: {error}");
                 }
             }
@@ -84,12 +120,21 @@ impl ConnectionController {
             .into());
         }
 
+        let reachability = ReachabilityEvidence::new_for_listeners(listener_addresses);
         Ok(Self {
             listeners,
             sites_controller,
+            site_registry,
+            reachability,
+            tracker_peer_cache,
             conn_len: 0,
             connections: HashMap::new(),
         })
+    }
+
+    /// Clone the per-listener reachability evidence for the tracker announcer.
+    pub fn reachability_evidence(&self) -> ReachabilityEvidence {
+        self.reachability.clone()
     }
 
     /// Accept peer sessions continuously and dispatch each socket independently.
@@ -100,8 +145,8 @@ impl ConnectionController {
         let listeners = self.listeners.clone();
         let controller = Arc::new(Mutex::new(self));
 
-        // Run one accept loop per bound address family. Each connection is
-        // handled independently, so a slow IPv6 peer cannot block IPv4 accepts.
+        // Run a separate accept loop per address family. Each listener feeds
+        // the same controller and the same reachability evidence.
         for listener in listeners {
             let controller = Arc::clone(&controller);
             tokio::spawn(async move {
@@ -123,7 +168,8 @@ impl ConnectionController {
                                     debug!("Peer connection from {peer_addr} closed: {error}");
                                 }
 
-                                // Keep counters accurate after every disconnect.
+                                // Keep counters accurate even when a peer
+                                // disconnects while a request is processed.
                                 let mut state = controller.lock().await;
                                 state.conn_len = state.conn_len.saturating_sub(1);
                                 let remove_peer =
@@ -147,8 +193,7 @@ impl ConnectionController {
             });
         }
 
-        // The peer server is a long-lived service. The spawned accept loops
-        // remain active until the Tokio runtime shuts down.
+        // These accept loops are long-lived services and stop with the runtime.
         std::future::pending::<()>().await;
         Ok(())
     }
@@ -175,7 +220,30 @@ impl ConnectionController {
             let mut protocol = Protocol::new(&mut connection);
             match request.cmd.as_str() {
                 "handshake" => {
-                    if let Err(error) = protocol.handshake(request.req_id).await {
+                    let handshake = match request.body::<Handshake>() {
+                        Ok(handshake) => handshake,
+                        Err(error) => {
+                            warn!("Invalid peer handshake from {peer_addr}: {error}");
+                            break;
+                        }
+                    };
+
+                    if !is_valid_peer_handshake(&handshake) {
+                        warn!("Rejected incomplete or unsupported peer handshake from {peer_addr}");
+                        break;
+                    }
+
+                    // A completed, valid handshake from a public source proves
+                    // that this listener is reachable for that source family.
+                    let port_opened = {
+                        let state = controller.lock().await;
+                        state.reachability.record_inbound(peer_addr.ip());
+                        state.reachability.is_reachable_for(peer_addr.ip())
+                    };
+                    if let Err(error) = protocol
+                        .handshake_with_port_opened(request.req_id, port_opened)
+                        .await
+                    {
                         warn!("Could not send handshake response to {peer_addr}: {error}");
                         break;
                     }
@@ -195,11 +263,6 @@ impl ConnectionController {
 
                     // Unknown sites can be rejected without entering the shared
                     // site-request path.
-                    #[derive(serde::Serialize, serde::Deserialize)]
-                    struct SiteRequest {
-                        site: String,
-                    }
-
                     if request.body::<SiteRequest>().is_err() {
                         let res = Self::unknown_site_response();
                         let site = request
@@ -246,6 +309,14 @@ impl ConnectionController {
     }
 
     async fn handle_request(&mut self, req: ZeroNetRequest) -> ResponseType {
+        let site_request = match req.body::<SiteRequest>() {
+            Ok(request) => request,
+            Err(_) => return ResponseType::InvalidRequest,
+        };
+        if !self.ensure_site_served(&site_request.site).await {
+            return Self::unknown_site_response();
+        }
+
         match req.cmd.as_str() {
             "pex" => self.handle_pex(req),
             "getHashfield" => self.get_hashfield(req),
@@ -257,6 +328,51 @@ impl ConnectionController {
                 ResponseType::UnknownCmd
             }
         }
+    }
+    /// Ensure newly-added sites are loaded into this listener's independent
+    /// controller, while honoring the UI controller's current serving state.
+    async fn ensure_site_served(&mut self, address: &str) -> bool {
+        if !self.site_registry.is_serving(address) {
+            return false;
+        }
+        let Some(storage) = self.site_registry.storage_for(address) else {
+            return false;
+        };
+
+        if let Some(site) = self.sites_controller.sites.get_mut(address) {
+            site.modify_storage(storage);
+            if !site.content_exists() {
+                if let Err(error) = site.load_content().await {
+                    warn!("Could not reload served site {address}: {error}");
+                    return false;
+                }
+            }
+            return site.content_exists();
+        }
+
+        let path = ENV.data_path.join(address);
+        if !path.exists() {
+            warn!("Served site directory is missing for {address}");
+            return false;
+        }
+
+        let mut site = match Site::new(address, path) {
+            Ok(site) => site,
+            Err(error) => {
+                warn!("Could not initialise newly-served site {address}: {error}");
+                return false;
+            }
+        };
+        site.modify_storage(storage);
+        if let Err(error) = site.load_content().await {
+            warn!("Could not load newly-served site {address}: {error}");
+            return false;
+        }
+
+        self.sites_controller
+            .sites
+            .insert(address.to_string(), site);
+        true
     }
 }
 
@@ -270,10 +386,19 @@ impl ConnectionController {
 
     fn handle_pex(&mut self, req: ZeroNetRequest) -> ResponseType {
         if let Ok(res) = req.body::<Pex>() {
-            let site = &res.site;
+            let site_address = res.site.clone();
             let need = res.need;
-            if self.sites_controller.sites.contains_key(site) {
-                let site = self.sites_controller.sites.get_mut(site).unwrap();
+            let tracker_peers = self.tracker_peer_cache.peers_for(&site_address);
+            if self.sites_controller.sites.contains_key(&site_address) {
+                let site = self.sites_controller.sites.get_mut(&site_address).unwrap();
+
+                // PEX can expose tracker-discovered peers before we have
+                // attempted direct connections to them.
+                for address in tracker_peers {
+                    let key = address.to_string();
+                    site.peers.entry(key).or_insert_with(|| Peer::new(address));
+                }
+
                 let mut peers = res.peers;
                 if let Some(peers_onion) = res.peers_onion {
                     peers.extend(peers_onion);
@@ -477,5 +602,48 @@ impl ConnectionController {
             error!("Error Parsing Request Body: Invalid Update Request {req:?}");
             ResponseType::InvalidRequest
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_complete_zero_v2_handshakes_without_requiring_peer_service() {
+        let handshake = crate::net::handshake().1;
+        assert!(is_valid_peer_handshake(&handshake));
+    }
+
+    #[tokio::test]
+    async fn bind_helper_accepts_ipv4_wildcard_listener() {
+        let listener = bind_peer_listener("0.0.0.0:0".parse().unwrap()).unwrap();
+        assert!(listener.local_addr().unwrap().is_ipv4());
+    }
+
+    #[tokio::test]
+    async fn bind_helper_accepts_ipv6_loopback_when_ipv6_is_available() {
+        let address: SocketAddr = "[::1]:0".parse().unwrap();
+        match bind_peer_listener(address) {
+            Ok(listener) => assert!(listener.local_addr().unwrap().is_ipv6()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrNotAvailable
+                        | std::io::ErrorKind::Unsupported
+                ) => {}
+            Err(error) => panic!("unexpected IPv6 listener bind error: {error}"),
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_protocol_and_empty_peer_identity() {
+        let mut handshake = crate::net::handshake().1;
+        handshake.protocol = "v1".into();
+        assert!(!is_valid_peer_handshake(&handshake));
+
+        handshake.protocol = "v2".into();
+        handshake.peer_id.clear();
+        assert!(!is_valid_peer_handshake(&handshake));
     }
 }

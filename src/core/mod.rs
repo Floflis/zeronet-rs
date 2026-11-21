@@ -5,4 +5,5 @@ pub mod io;
 pub mod peer;
 pub mod schema;
 pub mod site;
+pub mod site_registry;
 pub mod user;

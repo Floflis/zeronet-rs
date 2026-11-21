@@ -1,4 +1,11 @@
-use std::{collections::HashMap, env::current_dir, fs, io, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
+use std::{
+    collections::HashMap,
+    env::current_dir,
+    fs, io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use clap::{Arg, ArgMatches, Command};
 use lazy_static::lazy_static;
@@ -273,10 +280,19 @@ fn get_matches() -> ArgMatches {
         .get_matches()
 }
 
-/// Resolve the peer listener addresses selected by --fileserver_ip_type.
+/// Translate the historical wildcard option into an actual IPv4 wildcard.
+fn normalize_fileserver_ip(ip: &str) -> String {
+    if ip == "*" {
+        "0.0.0.0".to_owned()
+    } else {
+        ip.to_owned()
+    }
+}
+
+/// Resolve the peer-listener addresses selected by --fileserver_ip_type.
 ///
-/// A wildcard (or an unspecified IP address) creates independent IPv4 and/or
-/// IPv6 listeners. Explicit interface addresses remain scoped to that address.
+/// Wildcard addresses create independent IPv4 and/or IPv6 listeners. An
+/// explicit interface address remains scoped to that address.
 pub fn fileserver_bind_addresses(
     ip: &str,
     ip_type: &str,
@@ -334,7 +350,7 @@ pub fn get_env(matches: &ArgMatches) -> Result<Environment, Error> {
     };
     let fileserver_ip = matches
         .get_one::<String>("FILESERVER_IP")
-        .cloned()
+        .map(|ip| normalize_fileserver_ip(ip))
         .unwrap_or_else(|| unreachable!());
     let fileserver_ip_type = matches
         .get_one::<String>("FILESERVER_IP_TYPE")
@@ -437,11 +453,12 @@ pub fn client_info() -> serde_json::Value {
 
 #[cfg(test)]
 mod fileserver_bind_tests {
-    use super::fileserver_bind_addresses;
+    use super::{fileserver_bind_addresses, normalize_fileserver_ip};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     #[test]
     fn wildcard_defaults_to_dual_stack_addresses() {
+        assert_eq!(normalize_fileserver_ip("*"), "0.0.0.0");
         assert_eq!(
             fileserver_bind_addresses("*", "dual", 15441).unwrap(),
             vec![
@@ -469,7 +486,7 @@ mod fileserver_bind_tests {
     }
 
     #[test]
-    fn explicit_interface_address_is_preserved() {
+    fn explicit_interface_addresses_remain_scoped() {
         assert_eq!(
             fileserver_bind_addresses("127.0.0.1", "dual", 15441).unwrap(),
             vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 15441)]

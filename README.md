@@ -136,32 +136,18 @@ create local onion services or answer RSA onion-signing challenges.
 ## Peer TCP listener
 
 The normal daemon startup path starts the native peer TCP listener using
-`--fileserver_ip` and `--fileserver_port`. The default `--fileserver_ip=*`
-means `0.0.0.0`, binding all IPv4 interfaces. To keep peer serving local-only,
-set `--fileserver_ip=127.0.0.1`.
+`--fileserver_ip` and `--fileserver_port`. The default
+`--fileserver_ip=*` binds wildcard listeners for both IPv4 and IPv6. Select
+the address families with `--fileserver_ip_type=ipv4`, `ipv6`, or `dual`.
+Explicit interface addresses remain scoped to the address supplied.
 
-A successful local bind does **not** prove that the port is reachable from the
-public internet. Until external reachability and supported service types can
-be verified, peer handshakes continue to report `port_opened=false` and
-ZeroNet tracker announces keep `add=[]`. Router/NAT/firewall checks and
-service-type advertisement remain separate work.
+CJDNS and Yggdrasil use ordinary IPv6 sockets, so the client reuses its
+existing IPv6 TCP peer transport and `peers_ipv6` exchange. CJDNS addresses
+(`fc00::/8`) and Yggdrasil addresses (`0200::/7`) count as mesh IPv6
+reachability only after a valid inbound ZeroNet v2 handshake is received on
+an IPv6 listener. The evidence expires after 15 minutes; a configured route or
+local bind alone does not advertise the peer service to trackers.
 
-## IPv4, IPv6 and overlay mesh peers
-
-The peer listener defaults to dual-stack wildcard binding. Use
-`--fileserver_ip_type=ipv4`, `ipv6`, or `dual` to select the address
-families. An explicit non-wildcard `--fileserver_ip` keeps the listener scoped
-to that interface address.
-
-CJDNS and Yggdrasil use ordinary IPv6 sockets, so no mesh-specific peer
-transport is required. Before a native `zero://` tracker announce, the client
-performs local UDP route lookups for CJDNS (`fc00::/8`) and Yggdrasil
-(`0200::/7`). When a mesh route supplies a matching local IPv6 source
-address, the announce advertises the `ipv6` service type. No test datagram is
-sent by these route lookups.
-
-The existing LAN discovery service remains IPv4-broadcast based. Overlay mesh
-peer discovery uses tracker announces and the existing IPv6 peer exchange;
-IPv6 LAN multicast discovery is separate work. Cross-node testing on real
-CJDNS and Yggdrasil networks is still required before claiming full mesh
-interoperability.
+The existing LAN discovery service remains IPv4-broadcast based. Mesh peer
+discovery uses the existing tracker and IPv6 peer-exchange paths; IPv6 LAN
+multicast discovery is separate work.

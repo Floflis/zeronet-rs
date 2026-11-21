@@ -8,7 +8,7 @@ mod auth_wrapper;
 mod peer_db;
 mod websocket;
 
-wit_bindgen_wasmer::import!("assets/plugins/manifest.wit");
+wai_bindgen_wasmer::import!("assets/plugins/manifest.wit");
 
 use site_server::server::AppEntryImpl;
 

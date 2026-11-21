@@ -14,6 +14,7 @@ use crate::{
         error::Error,
         io::SiteIO,
         site::{models::SiteStorage, Site},
+        site_registry::{ServedSite, SiteRegistry},
     },
     environment::{ENV, SITE_STORAGE},
     io::{db::DbManager, utils::current_unix_epoch},
@@ -21,9 +22,17 @@ use crate::{
 };
 
 pub async fn run() -> Result<Addr<SitesController>, Error> {
+    run_with_registry(SiteRegistry::default()).await
+}
+
+/// Start the UI site controller with the registry shared by the peer listener
+/// and the native ZeroNet full-announcer.
+pub async fn run_with_registry(
+    site_registry: SiteRegistry,
+) -> Result<Addr<SitesController>, Error> {
     info!("Starting Site Controller.");
     let db_manager = DbManager::new();
-    let mut site_controller = SitesController::new(db_manager);
+    let mut site_controller = SitesController::new_with_registry(db_manager, site_registry);
     let site_storage = &*SITE_STORAGE;
     site_controller
         .extend_sites_from_sitedata(site_storage.clone())
@@ -44,10 +53,15 @@ pub struct SitesController {
     pub nonce: HashMap<String, Address>,
     pub sites_changed: u64,
     pub db_manager: DbManager,
+    pub site_registry: SiteRegistry,
 }
 
 impl SitesController {
     pub fn new(db_manager: DbManager) -> Self {
+        Self::new_with_registry(db_manager, SiteRegistry::default())
+    }
+
+    pub fn new_with_registry(db_manager: DbManager, site_registry: SiteRegistry) -> Self {
         Self {
             db_manager,
             sites: HashMap::new(),
@@ -55,6 +69,7 @@ impl SitesController {
             ajax_keys: HashMap::new(),
             nonce: HashMap::new(),
             sites_changed: current_unix_epoch(),
+            site_registry,
         }
     }
 
@@ -67,10 +82,10 @@ impl SitesController {
             site = Site::new(&address_str, ENV.data_path.join(address_str.clone())).unwrap();
             &mut site
         };
-        if let Some(addr) = self.sites_addr.get(address)
-            && site.content_path().is_file()
-        {
-            return Ok((address.clone(), addr.clone()));
+        if let Some(addr) = self.sites_addr.get(address) {
+            if site.content_path().is_file() {
+                return Ok((address.clone(), addr.clone()));
+            }
         }
         trace!(
             "Spinning up actor for site zero://{}",
@@ -103,10 +118,10 @@ impl SitesController {
     }
 
     pub fn get_by_key(&mut self, key: String) -> Result<(Address, Addr<Site>), Error> {
-        if let Some(address) = self.nonce.get(&key)
-            && let Some(addr) = self.sites_addr.get(address)
-        {
-            return Ok((address.clone(), addr.clone()));
+        if let Some(address) = self.nonce.get(&key) {
+            if let Some(addr) = self.sites_addr.get(address) {
+                return Ok((address.clone(), addr.clone()));
+            }
         }
         error!("No site found for key {key}");
         Err(Error::MissingError)
@@ -167,11 +182,26 @@ impl SitesController {
         self.update_sites_changed();
     }
 
-    fn update_sites_changed(&mut self) {
+    /// Refresh both local discovery and the authoritative externally-served
+    /// site registry after a site is added, removed, paused or resumed.
+    pub fn update_sites_changed(&mut self) {
         self.sites_changed = current_unix_epoch();
 
-        // Keep the core LAN announcer in sync when sites are added or removed.
+        // LAN discovery continues to know all locally installed sites.
         crate::discovery::lan::set_local_sites(self.sites.keys().cloned().collect());
+
+        // Full tracker announces contain only complete, loaded sites that are
+        // currently marked as serving by the UI controller.
+        self.site_registry.replace(
+            self.sites
+                .values()
+                .filter(|site| site.storage.settings.serving && site.content_exists())
+                .map(|site| ServedSite {
+                    address: site.address().to_string(),
+                    hash: site.addr().get_address_hash(),
+                    storage: site.storage.clone(),
+                }),
+        );
     }
 }
 
@@ -189,12 +219,7 @@ impl SitesController {
         let has_params = params.is_some();
         let mut stmt = conn.prepare(&query).unwrap();
         let count = stmt.column_count();
-        let names = {
-            stmt.column_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()
-        };
+        let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         let res = if has_params {
             stmt.query(params![params])
         } else {
