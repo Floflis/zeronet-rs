@@ -1,0 +1,30 @@
+name: Iroh bridge
+
+on:
+  pull_request:
+    paths:
+      - "iroh-bridge/**"
+      - ".github/workflows/iroh-bridge.yml"
+  push:
+    branches: [main]
+    paths:
+      - "iroh-bridge/**"
+      - ".github/workflows/iroh-bridge.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --manifest-path iroh-bridge/Cargo.toml -- --check
+      - name: Run bridge tests
+        run: cargo test --manifest-path iroh-bridge/Cargo.toml
+      - name: Build release binary
+        run: cargo build --release --manifest-path iroh-bridge/Cargo.toml
