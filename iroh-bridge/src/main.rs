@@ -410,6 +410,15 @@ mod tests {
     }
 
     #[test]
+    fn iroh_blob_hash_matches_the_manifest_flat_blake3_vector() {
+        let hash = Hash::new(b"abc");
+        assert_eq!(
+            hash.to_string(),
+            "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
+        );
+    }
+
+    #[test]
     fn bridge_paths_reject_parent_traversal() {
         let temp = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
